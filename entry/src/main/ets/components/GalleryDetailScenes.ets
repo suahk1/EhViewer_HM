@@ -1,0 +1,1347 @@
+﻿import { GalleryDetail, GalleryPreview } from '../model/GalleryModels';
+import { GalleryComment } from '../model/GalleryModels';
+import { cloneTagInfo } from '../shared/GalleryClones';
+import { GalleryTagInfo } from '../model/GalleryModels';
+import { ArchiveOption, ArchiverInfo, ArchiverOption, HathArchiveList, TorrentInfo } from '../model/GalleryModels';
+import { ehTagTranslationStore } from '../services/EhTagTranslationStore';
+import { TRANSLATION_ENABLED_KEY, ehTranslationService } from '../services/EhTranslationService';
+import { TRANSLATION_BUTTONS_VISIBLE_KEY } from '../services/AppSettingsStore';
+import {
+  BOTTOM_AVOID_HEIGHT_KEY,
+  LANGUAGE_REVISION_KEY,
+  STATUS_BAR_HEIGHT_KEY,
+  createEmptyDetail,
+  galleryDisplayTitle,
+  nextFloatingToolbarOffset,
+  pushDetailBackHandler,
+  shouldShowTagTranslations,
+  uiStatusText,
+  uiText
+} from '../shared/AppRuntime';
+import { themePageBackground } from '../shared/AppPalette';
+import {
+  themeAccentTextColor,
+  themeDangerText,
+  themeDividerColor,
+  themeInactiveActionText,
+  themePrimaryText,
+  themeSecondaryText,
+  themeSuccessText,
+  themeSurface,
+  themeSurfaceVariant,
+  themeTertiaryText
+} from '../shared/AppPalette';
+import {
+  uiAdaptiveToolbarHeight,
+  uiButtonMaterial,
+  uiTransparentButtonBackgroundEffect,
+  uiDialogBlurOptions,
+  uiDialogBlurStyle,
+  uiDialogMaterial,
+  uiDialogSurfaceBackground,
+  uiDialogSurfaceRadius,
+  uiDialogSurfaceShadow,
+  uiListItemBackground,
+  uiMaterialForegroundColor,
+  uiRadius,
+  uiMaterialBackground
+} from '../shared/AppSurfaceStyle';
+import { MAIN_CONTENT_WIDTH_VP_KEY } from '../services/WindowChromeController';
+import { EhSubNavBar } from './NavigationComponents';
+import { CommentsScene } from './ReaderScenes';
+import { DetailHeader } from './detail/DetailHeader';
+import { DetailInfoBlock, GalleryInfoScene } from './detail/DetailInfo';
+import { DetailActions, RatingPanel } from './detail/DetailActions';
+import { DetailTags } from './detail/DetailTags';
+import { DetailPreviews, DetailPreviewJumpOverlay } from './detail/DetailPreviews';
+import { DetailComments } from './detail/DetailComments';
+import { PopupScrim } from './PopupScrim';
+import { appDockBottomInset } from './FloatingDock';
+
+@Component
+export struct GalleryDetailOverlayScene {
+  @Prop renderVersion: number = 0;
+  @Prop showInfo: boolean = false;
+  @Prop showComments: boolean = false;
+  @Prop commentDraft: string = '';
+  @Prop commentPosting: boolean = false;
+  @Prop commentPostStatus: string = '';
+  onCommentDraftChange: (value: string) => void = (_value: string) => {};
+  onPostComment: () => void = () => {};
+  @Prop detail: GalleryDetail = createEmptyDetail();
+  @Prop isDetailLoaded: boolean = false;
+  @Prop sectionsFailed: boolean = false;
+  @Prop sectionsMessage: string = '';
+  onRetrySections: (section: string) => void = (_section: string) => {};
+  @Prop isFavorited: boolean = false;
+  @Prop statusText: string = '';
+  @Prop requestUrl: string = '';
+  @Prop downloadText: string = 'Download';
+  @Prop archivePanelVisible: boolean = false;
+  @Prop archivePanelMode: string = '';
+  @Prop archivePanelStatus: string = '';
+  @Prop archiveBusy: boolean = false;
+  @Prop archiverInfo: ArchiverInfo = { funds: '', options: [] };
+  @Prop hathArchiveList: HathArchiveList = { formParamOr: '', options: [] };
+  @Prop torrentList: TorrentInfo[] = [];
+  @Prop detailScrollResetVersion: number = 0;
+  initialDetailScrollOffset: number = 0;
+  onBack: () => void = () => {};
+  onShowInfo: () => void = () => {};
+  onCloseInfo: () => void = () => {};
+  onCloseComments: () => void = () => {};
+  onSelectTorrent: (torrent: TorrentInfo) => void = (_torrent: TorrentInfo) => {};
+  onDownload: () => void = () => {};
+  onRead: () => void = () => {};
+  onUploaderSearch: () => void = () => {};
+  onCategorySearch: () => void = () => {};
+  onSelectPreview: (preview: GalleryPreview) => void = () => {};
+  onJumpPreviewPage: (pageIndex: number) => void = (_pageIndex: number) => {};
+  onComments: () => void = () => {};
+  onVoteComment: (comment: GalleryComment, vote: number) => void = (_comment: GalleryComment, _vote: number) => {};
+  onOpenCommentGalleryLink: (url: string) => void = (_url: string) => {};
+  onFavorite: () => void = () => {};
+  onShare: () => void = () => {};
+  onRate: (rating: number) => void = (_rating: number) => {};
+  onTorrent: () => void = () => {};
+  onArchive: () => void = () => {};
+  onHath: () => void = () => {};
+  onSimilar: () => void = () => {};
+  onSearchCover: () => void = () => {};
+  onCloseArchivePanel: () => void = () => {};
+  onSelectArchiverOption: (option: ArchiverOption) => void = (_option: ArchiverOption) => {};
+  onSelectHathOption: (option: ArchiveOption) => void = (_option: ArchiveOption) => {};
+  onLoadMorePreviews: () => void = () => {};
+  onRefreshDetail: (done: () => void) => void = (_done: () => void) => {};
+  onDetailScrollUpdate: (offset: number) => void = () => {};
+  onTagSearch: (namespace: string, tag: string) => void = (_namespace: string, _tag: string) => {};
+  onVoteTag: (fullTag: string, vote: number) => void = (_fullTag: string, _vote: number) => {};
+  onAddTag: (fullTag: string) => void = (_fullTag: string) => {};
+  onCopyTag: (fullTag: string) => void = (_fullTag: string) => {};
+  onSubscribeTag: (fullTag: string) => void = (_fullTag: string) => {};
+  onHideTag: (fullTag: string) => void = (_fullTag: string) => {};
+  onBlockTag: (fullTag: string) => void = (_fullTag: string) => {};
+  onShowTagDefinition: (fullTag: string) => void = (_fullTag: string) => {};
+  @StorageProp(STATUS_BAR_HEIGHT_KEY) statusBarHeightPx: number = 0;
+
+  private statusBarVp(): number {
+    return this.getUIContext().px2vp(this.statusBarHeightPx);
+  }
+
+  build() {
+    Stack() {
+      GalleryDetailScene({
+        renderVersion: this.renderVersion,
+        detail: this.detail,
+        isDetailLoaded: this.isDetailLoaded,
+        sectionsFailed: this.sectionsFailed,
+        sectionsMessage: this.sectionsMessage,
+        onRetrySections: this.onRetrySections,
+        isFavorited: this.isFavorited,
+        statusText: this.statusText,
+        requestUrl: this.requestUrl,
+        downloadText: this.downloadText,
+        archivePanelVisible: this.archivePanelVisible,
+        archivePanelMode: this.archivePanelMode,
+        archivePanelStatus: this.archivePanelStatus,
+        archiveBusy: this.archiveBusy,
+        archiverInfo: this.archiverInfo,
+        hathArchiveList: this.hathArchiveList,
+        torrentList: this.torrentList,
+        onBack: this.onBack,
+        onShowInfo: this.onShowInfo,
+        onCloseInfo: this.onCloseInfo,
+        onDownload: this.onDownload,
+        onRead: this.onRead,
+        onUploaderSearch: this.onUploaderSearch,
+        onCategorySearch: this.onCategorySearch,
+        onSelectPreview: this.onSelectPreview,
+        onJumpPreviewPage: this.onJumpPreviewPage,
+        onComments: this.onComments,
+        onVoteComment: this.onVoteComment,
+        onOpenCommentGalleryLink: this.onOpenCommentGalleryLink,
+        onFavorite: this.onFavorite,
+        onShare: this.onShare,
+        onRate: this.onRate,
+        onTorrent: this.onTorrent,
+        onArchive: this.onArchive,
+        onHath: this.onHath,
+        onSimilar: this.onSimilar,
+        onSearchCover: this.onSearchCover,
+        onCloseArchivePanel: this.onCloseArchivePanel,
+        onSelectArchiverOption: this.onSelectArchiverOption,
+        onSelectHathOption: this.onSelectHathOption,
+        onSelectTorrent: this.onSelectTorrent,
+        onLoadMorePreviews: this.onLoadMorePreviews,
+        onRefreshDetail: this.onRefreshDetail,
+        initialDetailScrollOffset: this.initialDetailScrollOffset,
+        detailScrollResetVersion: this.detailScrollResetVersion,
+        onDetailScrollUpdate: this.onDetailScrollUpdate,
+        onTagSearch: this.onTagSearch,
+        onVoteTag: this.onVoteTag,
+        onAddTag: this.onAddTag,
+        onCopyTag: this.onCopyTag,
+        onSubscribeTag: this.onSubscribeTag,
+        onHideTag: this.onHideTag,
+        onBlockTag: this.onBlockTag,
+        onShowTagDefinition: this.onShowTagDefinition
+      })
+
+      if (this.showInfo) {
+        GalleryInfoScene({
+          detail: this.detail,
+          requestUrl: this.requestUrl,
+          statusBarHeight: this.statusBarVp(),
+          onBack: this.onCloseInfo
+        })
+        .zIndex(18)
+        .transition(TransitionEffect.asymmetric(
+          TransitionEffect.move(TransitionEdge.END).animation({ duration: 240, curve: Curve.EaseOut }),
+          TransitionEffect.move(TransitionEdge.END).animation({ duration: 200, curve: Curve.EaseIn })))
+      }
+
+      if (this.showComments) {
+        CommentsScene({
+          renderVersion: this.renderVersion,
+          commentDraft: this.commentDraft,
+          commentPosting: this.commentPosting,
+          commentPostStatus: this.commentPostStatus,
+          onCommentDraftChange: this.onCommentDraftChange,
+          onPostComment: this.onPostComment,
+          comments: this.detail.comments,
+          galleryTitle: galleryDisplayTitle(this.detail),
+          onBack: this.onCloseComments,
+          onVoteComment: this.onVoteComment,
+          onOpenGalleryLink: this.onOpenCommentGalleryLink
+        })
+        .zIndex(16)
+        .transition(TransitionEffect.asymmetric(
+          TransitionEffect.move(TransitionEdge.END).animation({ duration: 240, curve: Curve.EaseOut }),
+          TransitionEffect.move(TransitionEdge.END).animation({ duration: 200, curve: Curve.EaseIn })))
+      }
+    }
+    .width('100%')
+    .height('100%')
+  }
+}
+
+@Component
+export struct GalleryDetailScene {
+  @Prop renderVersion: number = 0;
+  @Prop detail: GalleryDetail = createEmptyDetail();
+  @Prop isDetailLoaded: boolean = false;
+  @Prop sectionsFailed: boolean = false;
+  @Prop sectionsMessage: string = '';
+  onRetrySections: (section: string) => void = (_section: string) => {};
+  @Prop isFavorited: boolean = false;
+  @Prop statusText: string = '';
+  @Prop requestUrl: string = '';
+  @Prop downloadText: string = 'Download';
+  @Prop archivePanelVisible: boolean = false;
+  @Prop archivePanelMode: string = '';
+  @Prop archivePanelStatus: string = '';
+  @Prop archiveBusy: boolean = false;
+  @Prop archiverInfo: ArchiverInfo = { funds: '', options: [] };
+  @Prop hathArchiveList: HathArchiveList = { formParamOr: '', options: [] };
+  @Prop torrentList: TorrentInfo[] = [];
+  @Prop @Watch('onDetailScrollReset') detailScrollResetVersion: number = 0;
+  onBack: () => void = () => {};
+  onShowInfo: () => void = () => {};
+  onCloseInfo: () => void = () => {};
+  onDownload: () => void = () => {};
+  onRead: () => void = () => {};
+  onUploaderSearch: () => void = () => {};
+  onCategorySearch: () => void = () => {};
+  onSelectPreview: (preview: GalleryPreview) => void = () => {};
+  onJumpPreviewPage: (pageIndex: number) => void = (_pageIndex: number) => {};
+  onComments: () => void = () => {};
+  onVoteComment: (comment: GalleryComment, vote: number) => void = (_comment: GalleryComment, _vote: number) => {};
+  onOpenCommentGalleryLink: (url: string) => void = (_url: string) => {};
+  onFavorite: () => void = () => {};
+  onShare: () => void = () => {};
+  onRate: (rating: number) => void = (_rating: number) => {};
+  onTorrent: () => void = () => {};
+  onArchive: () => void = () => {};
+  onHath: () => void = () => {};
+  onSimilar: () => void = () => {};
+  onSearchCover: () => void = () => {};
+  onCloseArchivePanel: () => void = () => {};
+  onSelectArchiverOption: (option: ArchiverOption) => void = (_option: ArchiverOption) => {};
+  onSelectHathOption: (option: ArchiveOption) => void = (_option: ArchiveOption) => {};
+  onSelectTorrent: (torrent: TorrentInfo) => void = (_torrent: TorrentInfo) => {};
+  onLoadMorePreviews: () => void = () => {};
+  onRefreshDetail: (done: () => void) => void = (_done: () => void) => {};
+  initialDetailScrollOffset: number = 0;
+  onDetailScrollUpdate: (offset: number) => void = () => {};
+  onTagSearch: (namespace: string, tag: string) => void = (_namespace: string, _tag: string) => {};
+  onVoteTag: (fullTag: string, vote: number) => void = (_fullTag: string, _vote: number) => {};
+  onAddTag: (fullTag: string) => void = (_fullTag: string) => {};
+  onCopyTag: (fullTag: string) => void = (_fullTag: string) => {};
+  onBlockTag: (fullTag: string) => void = (_fullTag: string) => {};
+  onShowTagDefinition: (fullTag: string) => void = (_fullTag: string) => {};
+  private detailScroller: Scroller = new Scroller();
+  onSubscribeTag: (fullTag: string) => void = (_fullTag: string) => {};
+  onHideTag: (fullTag: string) => void = (_fullTag: string) => {};
+  @State showRatingDialog: boolean = false;
+  @State pendingRating: number = 0;
+  @State ratingPopupWidth: number = 0;
+  @State ratingPopupHeight: number = 0;
+  @State previewJumpPanelVisible: boolean = false;
+  @State previewJumpPageIndex: number = 0;
+  @State detailRefreshing: boolean = false;
+  @State tagVotePanelVisible: boolean = false;
+  @State tagVoteTarget: GalleryTagInfo = createEmptyTagInfo();
+  @State toolbarOffsetY: number = 0;
+  @StorageProp(MAIN_CONTENT_WIDTH_VP_KEY) contentWidth: number = 360;
+  private unregisterTransientBackHandler: () => void = () => {};
+  private toolbarRestoring: boolean = false;
+
+  aboutToAppear(): void {
+    this.unregisterTransientBackHandler = pushDetailBackHandler(() => this.handleTransientSystemBack());
+  }
+
+  aboutToDisappear(): void {
+    this.unregisterTransientBackHandler();
+  }
+
+  onDetailScrollReset(): void {
+    this.toolbarOffsetY = 0;
+    this.detailScroller.scrollTo({ xOffset: 0, yOffset: 0 });
+    this.onDetailScrollUpdate(0);
+    setTimeout(() => {
+      this.detailScroller.scrollTo({ xOffset: 0, yOffset: 0 });
+    }, 0);
+  }
+
+  private handleTransientSystemBack(): boolean {
+    if (this.archivePanelVisible) {
+      this.onCloseArchivePanel();
+      return true;
+    }
+    if (this.tagVotePanelVisible) {
+      this.closeTagVotePanel();
+      return true;
+    }
+    if (this.previewJumpPanelVisible) {
+      this.previewJumpPanelVisible = false;
+      return true;
+    }
+    if (this.showRatingDialog) {
+      this.showRatingDialog = false;
+      return true;
+    }
+    return false;
+  }
+  @StorageProp(STATUS_BAR_HEIGHT_KEY) statusBarHeightPx: number = 0;
+  @StorageProp(BOTTOM_AVOID_HEIGHT_KEY) bottomAvoidHeight: number = 0;
+  @StorageLink(TRANSLATION_ENABLED_KEY) translationEnabled: boolean = false;
+  @StorageProp(TRANSLATION_BUTTONS_VISIBLE_KEY) translationButtonsVisible: boolean = true;
+
+  private statusBarVp(): number {
+    return this.getUIContext().px2vp(this.statusBarHeightPx);
+  }
+
+  private totalBarHeight(): number {
+    return this.statusBarVp() + uiAdaptiveToolbarHeight(this.contentWidth);
+  }
+
+  private visibleBarHeight(): number {
+    return Math.max(0, Math.min(this.totalBarHeight(), this.totalBarHeight() + this.toolbarOffsetY));
+  }
+
+  private handleScrollFrame(scrollOffset: number): number {
+    const yOffset = Math.max(0, this.detailScroller.currentOffset().yOffset);
+    if (yOffset <= 4) {
+      this.toolbarRestoring = false;
+      this.toolbarOffsetY = 0;
+      return scrollOffset;
+    }
+    if (scrollOffset > 0 && this.visibleBarHeight() > 0) {
+      const previousOffsetY = this.toolbarOffsetY;
+      this.toolbarRestoring = false;
+      this.toolbarOffsetY = nextFloatingToolbarOffset(this.toolbarOffsetY, scrollOffset, yOffset,
+        this.totalBarHeight());
+      return Math.max(0, scrollOffset - Math.max(0, previousOffsetY - this.toolbarOffsetY));
+    }
+    if (scrollOffset < 0 && this.toolbarOffsetY < 0) {
+      this.restoreToolbarOnReverseScroll();
+    }
+    return scrollOffset;
+  }
+
+  private restoreToolbarOnReverseScroll(): void {
+    if (this.toolbarRestoring) {
+      return;
+    }
+    this.toolbarRestoring = true;
+    this.getUIContext().animateTo({ duration: 260, curve: Curve.EaseOut }, () => {
+      this.toolbarOffsetY = 0;
+    });
+    setTimeout(() => {
+      this.toolbarRestoring = false;
+    }, 280);
+  }
+
+  private startRating(): void {
+    if (!this.isDetailLoaded || this.detail.apiUid < 0 || this.detail.apiKey.length === 0) {
+      return;
+    }
+    const current = this.detail.rated && this.detail.rating > 0 ? Math.round(this.detail.rating) : 5;
+    this.pendingRating = Math.max(1, Math.min(5, current));
+    this.showRatingDialog = true;
+  }
+
+  private previewJumpTotalPages(): number {
+    if (this.detail.previewPages > 0) {
+      return this.detail.previewPages;
+    }
+    return this.detail.previewSet.length > 0 ? 1 : 0;
+  }
+
+  private openPreviewJumpPanel(): void {
+    const total = this.previewJumpTotalPages();
+    if (!this.isDetailLoaded || total <= 1) {
+      return;
+    }
+    this.previewJumpPageIndex = Math.max(0, Math.min(this.previewJumpPageIndex, total - 1));
+    this.previewJumpPanelVisible = true;
+  }
+
+  private closePreviewJumpPanel(pageIndex: number): void {
+    const total = this.previewJumpTotalPages();
+    const target = Math.max(0, Math.min(pageIndex, Math.max(0, total - 1)));
+    this.previewJumpPageIndex = target;
+    this.previewJumpPanelVisible = false;
+    if (total > 1) {
+      this.onJumpPreviewPage(target);
+    }
+  }
+
+  private openTagVotePanel(info: GalleryTagInfo): void {
+    this.tagVoteTarget = cloneTagInfo(info);
+    this.tagVotePanelVisible = true;
+  }
+
+  private closeTagVotePanel(): void {
+    this.tagVotePanelVisible = false;
+  }
+
+  private submitTagVote(vote: number): void {
+    const fullTag = this.tagVoteTarget.fullTag;
+    this.onVoteTag(fullTag, vote);
+  }
+
+  private showTaggedGalleries(): void {
+    const tag = cloneTagInfo(this.tagVoteTarget);
+    this.tagVotePanelVisible = false;
+    this.onTagSearch(tag.namespace, tag.tag);
+  }
+
+  private showTagDefinition(): void {
+    const fullTag = this.tagVoteTarget.fullTag;
+    this.tagVotePanelVisible = false;
+    this.onShowTagDefinition(fullTag);
+  }
+
+  private copyTag(): void {
+    const fullTag = this.tagVoteTarget.fullTag;
+    this.tagVotePanelVisible = false;
+    this.onCopyTag(fullTag);
+  }
+
+  private blockTag(): void {
+    const fullTag = this.tagVoteTarget.fullTag;
+    this.tagVotePanelVisible = false;
+    this.onBlockTag(fullTag);
+  }
+
+  private subscribeTag(): void {
+    const fullTag = this.tagVoteTarget.fullTag;
+    this.tagVotePanelVisible = false;
+    this.onSubscribeTag(fullTag);
+  }
+
+  private hideTag(): void {
+    const fullTag = this.tagVoteTarget.fullTag;
+    this.tagVotePanelVisible = false;
+    this.onHideTag(fullTag);
+  }
+
+  private startDetailPullRefresh(): void {
+    this.detailRefreshing = true;
+    let finished = false;
+    const finish = () => {
+      if (finished) {
+        return;
+      }
+      finished = true;
+      this.detailRefreshing = false;
+      setTimeout(() => {
+        this.detailRefreshing = false;
+      }, 0);
+    };
+    setTimeout(() => {
+      finish();
+    }, 30000);
+    try {
+      this.onRefreshDetail(finish);
+    } catch (_error) {
+      finish();
+    }
+  }
+
+  build() {
+    Stack({ alignContent: Alignment.Center }) {
+      Stack({ alignContent: Alignment.TopStart }) {
+        Refresh({ refreshing: this.detailRefreshing }) {
+          List({ space: 0, scroller: this.detailScroller }) {
+            ListItem() {
+              DetailHeader({
+                detail: this.detail,
+                downloadText: this.downloadText,
+                translateTitle: this.translationEnabled,
+                onDownload: this.onDownload,
+                onRead: this.onRead,
+                onUploaderSearch: this.onUploaderSearch,
+                onCategorySearch: this.onCategorySearch
+              })
+            }
+            .reuseId('detail-header')
+            ListItem() {
+              DetailInfoBlock({
+                detail: this.detail,
+                requestUrl: this.requestUrl,
+                isDetailLoaded: this.isDetailLoaded,
+                sectionFailed: this.sectionsFailed,
+                sectionMessage: this.sectionsMessage,
+                onMoreInfo: this.onShowInfo,
+                onRetrySection: () => {
+                  this.onRetrySections('info');
+                }
+              })
+            }
+            .reuseId('detail-info')
+            ListItem() {
+              DetailActions({
+                detail: this.detail,
+                isDetailLoaded: this.isDetailLoaded,
+                isFavorited: this.isFavorited,
+                onFavorite: this.onFavorite,
+                onShare: this.onShare,
+                onRate: () => {
+                  this.startRating();
+                },
+                onTorrent: this.onTorrent,
+                onArchive: this.onArchive,
+                onHath: this.onHath,
+                onSimilar: this.onSimilar,
+                onSearchCover: this.onSearchCover
+              })
+            }
+            .reuseId('detail-actions')
+            ListItem() {
+              DetailTags({
+                renderVersion: this.renderVersion,
+                tags: this.detail.tags,
+                isDetailLoaded: this.isDetailLoaded,
+                sectionFailed: this.sectionsFailed,
+                sectionMessage: this.sectionsMessage,
+                onRetrySection: () => {
+                  this.onRetrySections('tags');
+                },
+                onTagSearch: this.onTagSearch,
+                onAddTag: this.onAddTag,
+                onOpenTagVote: (info: GalleryTagInfo) => {
+                  this.openTagVotePanel(info);
+                }
+              })
+            }
+            .reuseId('detail-tags')
+            ListItem() {
+              DetailComments({
+                comments: this.detail.comments,
+                isDetailLoaded: this.isDetailLoaded,
+                sectionFailed: this.sectionsFailed,
+                sectionMessage: this.sectionsMessage,
+                onRetrySection: () => {
+                  this.onRetrySections('comments');
+                },
+                translateComments: this.translationEnabled,
+                onComments: this.onComments,
+                onVoteComment: this.onVoteComment,
+                onOpenGalleryLink: this.onOpenCommentGalleryLink
+              })
+            }
+            .reuseId('detail-comments')
+            ListItem() {
+              DetailPreviews({
+                previews: this.detail.previewSet,
+                previewPages: this.detail.previewPages,
+                totalPages: this.previewJumpTotalPages(),
+                isDetailLoaded: this.isDetailLoaded,
+                sectionFailed: this.sectionsFailed,
+                sectionMessage: this.sectionsMessage,
+                onSelectPreview: this.onSelectPreview,
+                onRetrySection: () => {
+                  this.onRetrySections('previews');
+                },
+                onOpenJumpPanel: () => {
+                  this.openPreviewJumpPanel();
+                }
+              })
+            }
+            .reuseId('detail-previews')
+            // 底部占位是列表内容的一部分，滑到底时它能沉到胶囊下面。
+            ListItem() {
+              Row()
+                .width('100%')
+                .height(appDockBottomInset(this.bottomAvoidHeight))
+            }
+          }
+          .width('100%')
+          .height('100%')
+          .backgroundColor(themePageBackground())
+          .cachedCount(3)
+          .onAppear(() => {
+            if (this.initialDetailScrollOffset > 0) {
+              this.toolbarOffsetY = -this.totalBarHeight();
+              this.detailScroller.scrollTo({ xOffset: 0, yOffset: this.initialDetailScrollOffset });
+            }
+          })
+          .onScrollFrameBegin((offset: number, _state: ScrollState) => {
+            return { offsetRemain: this.handleScrollFrame(offset) };
+          })
+          .onScrollStop(() => {
+            this.onDetailScrollUpdate(this.detailScroller.currentOffset().yOffset);
+          })
+          .onReachEnd(() => {
+            this.onLoadMorePreviews();
+          })
+        }
+        .width('100%')
+        .height('100%')
+        .padding({ top: this.visibleBarHeight() })
+        .backgroundColor(themePageBackground())
+        .refreshOffset(64)
+        .pullToRefresh(true)
+        .onRefreshing(() => {
+          this.startDetailPullRefresh();
+        })
+
+        EhSubNavBar({
+          statusBarHeight: this.statusBarVp(),
+          title: galleryDisplayTitle(this.detail),
+          translateTitle: this.translationEnabled,
+          showAction: this.translationButtonsVisible,
+          actionChecked: this.translationEnabled,
+          actionIcon: $r('sys.symbol.translate'),
+          translateY: this.toolbarOffsetY,
+          onBack: this.onBack,
+          onAction: () => {
+            ehTranslationService.setEnabled(!this.translationEnabled);
+          }
+        })
+      }
+      .width('100%')
+      .height('100%')
+      .backgroundColor(themePageBackground())
+
+      if (this.showRatingDialog) {
+        Stack({ alignContent: Alignment.Center }) {
+          PopupScrim({
+            showCutout: this.ratingPopupWidth > 0 && this.ratingPopupHeight > 0,
+            cutoutWidth: this.ratingPopupWidth,
+            cutoutHeight: this.ratingPopupHeight,
+            cutoutRadius: uiDialogSurfaceRadius(),
+            onDismiss: () => {
+              this.showRatingDialog = false;
+            }
+          })
+          Column() {
+            RatingPanel({
+              rating: this.pendingRating,
+              onChange: (rating: number) => {
+                this.pendingRating = rating;
+              },
+              onCancel: () => {
+                this.showRatingDialog = false;
+              },
+              onSubmit: () => {
+                this.showRatingDialog = false;
+                this.onRate(this.pendingRating);
+              }
+            })
+            .onAreaChange((_oldArea: Area, newArea: Area) => {
+              this.ratingPopupWidth = Number.parseFloat(newArea.width.toString());
+              this.ratingPopupHeight = Number.parseFloat(newArea.height.toString());
+            })
+          }
+          .width('100%')
+          .height('100%')
+          .padding(24)
+          .justifyContent(FlexAlign.Center)
+          .hitTestBehavior(HitTestMode.Transparent)
+        }
+        .width('100%')
+        .height('100%')
+        .zIndex(10)
+        .transition(TransitionEffect.OPACITY.animation({ duration: 180, curve: Curve.EaseOut }))
+      }
+      if (this.previewJumpPanelVisible) {
+        DetailPreviewJumpOverlay({
+          totalPages: this.previewJumpTotalPages(),
+          initialPageIndex: this.previewJumpPageIndex,
+          onClose: (pageIndex: number) => {
+            this.closePreviewJumpPanel(pageIndex);
+          }
+        })
+        .zIndex(12)
+        .transition(TransitionEffect.OPACITY.animation({ duration: 180, curve: Curve.EaseOut }))
+      }
+      if (this.tagVotePanelVisible) {
+        TagVoteOverlay({
+          tag: this.tagVoteTarget,
+          onDismiss: () => {
+            this.closeTagVotePanel();
+          },
+          onVote: (vote: number) => {
+            this.submitTagVote(vote);
+          },
+          onShowTaggedGalleries: () => {
+            this.showTaggedGalleries();
+          },
+          onShowTagDefinition: () => {
+            this.showTagDefinition();
+          },
+          onCopyTag: () => {
+            this.copyTag();
+          },
+          onSubscribeTag: () => {
+            this.subscribeTag();
+          },
+          onHideTag: () => {
+            this.hideTag();
+          },
+          onBlockTag: () => {
+            this.blockTag();
+          }
+        })
+        .zIndex(14)
+        .transition(TransitionEffect.OPACITY.animation({ duration: 160, curve: Curve.EaseOut }))
+      }
+      if (this.archivePanelVisible) {
+        ArchiveOptionsOverlay({
+          mode: this.archivePanelMode,
+          statusText: this.archivePanelStatus,
+          busy: this.archiveBusy,
+          archiverInfo: this.archiverInfo,
+          hathArchiveList: this.hathArchiveList,
+          torrentList: this.torrentList,
+          onDismiss: this.onCloseArchivePanel,
+          onSelectArchiverOption: this.onSelectArchiverOption,
+          onSelectHathOption: this.onSelectHathOption,
+          onSelectTorrent: this.onSelectTorrent
+        })
+        .zIndex(13)
+        .transition(TransitionEffect.OPACITY.animation({ duration: 180, curve: Curve.EaseOut }))
+      }
+    }
+    .width('100%')
+    .height('100%')
+    .backgroundColor(themePageBackground())
+  }
+}
+
+@Component
+struct TagVoteOverlay {
+  @State popupWidth: number = 0;
+  @State popupHeight: number = 0;
+  @State confirmingBlock: boolean = false;
+  @State voteSelection: number = 0;
+  @Prop tag: GalleryTagInfo = createEmptyTagInfo();
+  onDismiss: () => void = () => {};
+  onVote: (vote: number) => void = (_vote: number) => {};
+  onShowTaggedGalleries: () => void = () => {};
+  onShowTagDefinition: () => void = () => {};
+  onCopyTag: () => void = () => {};
+  onSubscribeTag: () => void = () => {};
+  onHideTag: () => void = () => {};
+  onBlockTag: () => void = () => {};
+
+  private translatedTitle(): string {
+    return translatedTagLabel(this.tag);
+  }
+
+  aboutToAppear(): void {
+    this.voteSelection = this.tag.voteUpEd === true ? 1 : (this.tag.voteDownEd === true ? -1 : 0);
+  }
+
+  @StorageProp(LANGUAGE_REVISION_KEY) languageRevision: number = 0;
+
+  private showTranslatedTitle(): boolean {
+    return shouldShowTagTranslations() && this.translatedTitle().length > 0 && this.translatedTitle() !== this.tag.tag;
+  }
+
+  build() {
+    Stack({ alignContent: Alignment.Center }) {
+      PopupScrim({
+        showCutout: this.popupWidth > 0 && this.popupHeight > 0,
+        cutoutWidth: this.popupWidth,
+        cutoutHeight: this.popupHeight,
+        cutoutRadius: uiDialogSurfaceRadius(),
+        onDismiss: () => {
+          this.onDismiss();
+        }
+      })
+
+      Column({ space: 14 }) {
+        Row() {
+          Column({ space: 3 }) {
+            Text(this.showTranslatedTitle() ? this.translatedTitle() : this.tag.fullTag)
+              .fontSize(17)
+              .fontWeight(FontWeight.Medium)
+              .fontColor(themePrimaryText())
+              .maxLines(2)
+              .textOverflow({ overflow: TextOverflow.Ellipsis })
+              .width('100%')
+            if (this.showTranslatedTitle()) {
+              Text(this.tag.fullTag)
+                .fontSize(13)
+                .fontColor(themeSecondaryText())
+                .maxLines(2)
+                .textOverflow({ overflow: TextOverflow.Ellipsis })
+                .width('100%')
+            }
+          }
+          .layoutWeight(1)
+
+          Button({ type: ButtonType.Normal, stateEffect: true }) {
+            SymbolGlyph($r('sys.symbol.xmark'))
+              .fontSize(18)
+              .fontColor([uiMaterialForegroundColor(themeSecondaryText())])
+          }
+          .width(34)
+          .height(34)
+          .padding(0)
+          .borderRadius(uiRadius(17))
+          .backgroundColor(uiMaterialBackground(themeSurfaceVariant()))
+          .backgroundEffect(uiTransparentButtonBackgroundEffect())
+          .systemMaterial(uiButtonMaterial())
+          .onClick(() => {
+            this.onDismiss();
+          })
+        }
+        .width('100%')
+        .alignItems(VerticalAlign.Top)
+
+        Column({ space: 0 }) {
+          TagVoteRow({
+            isEnabled: this.tag.id > 0,
+            upSelected: this.voteSelection > 0,
+            downSelected: this.voteSelection < 0,
+            onVote: (vote: number) => {
+              this.voteSelection = vote;
+              this.onVote(vote);
+            }
+          })
+          TagSettingsRow({
+            symbolIcon: $r('sys.symbol.square_grid_2x2'),
+            label: 'Show Tagged Galleries',
+            navigation: true,
+            onTap: this.onShowTaggedGalleries
+          })
+          TagSettingsRow({
+            symbolIcon: $r('sys.symbol.book'),
+            label: 'Show Tag Definition',
+            navigation: true,
+            onTap: this.onShowTagDefinition
+          })
+          TagSettingsRow({
+            symbolIcon: $r('sys.symbol.save'),
+            label: 'Copy Tag',
+            navigation: true,
+            onTap: this.onCopyTag
+          })
+          TagSettingsRow({
+            symbolIcon: $r('sys.symbol.star'),
+            label: 'Subscribe to Tag',
+            navigation: true,
+            onTap: this.onSubscribeTag
+          })
+          TagSettingsRow({
+            symbolIcon: $r('sys.symbol.xmark_circle'),
+            label: 'Block Tag on Account',
+            navigation: true,
+            danger: true,
+            onTap: this.onHideTag
+          })
+          TagSettingsRow({
+            symbolIcon: $r('sys.symbol.xmark_circle'),
+            label: 'Filter Tag Locally',
+            navigation: true,
+            danger: true,
+            lastInGroup: !this.confirmingBlock,
+            onTap: () => {
+              this.confirmingBlock = true;
+            }
+          })
+          if (this.confirmingBlock) {
+            Text(uiText('Block this tag locally?'))
+              .fontSize(13)
+              .fontColor(themeSecondaryText())
+              .width('100%')
+              .padding({ top: 10, bottom: 6, left: 2 })
+            TagSettingsRow({
+              symbolIcon: $r('sys.symbol.xmark'),
+              label: 'Cancel',
+              firstInGroup: true,
+              onTap: () => {
+                this.confirmingBlock = false;
+              }
+            })
+            TagSettingsRow({
+              symbolIcon: $r('sys.symbol.xmark_circle'),
+              label: 'Block',
+              danger: true,
+              lastInGroup: true,
+              onTap: () => {
+                this.confirmingBlock = false;
+                this.onBlockTag();
+              }
+            })
+          }
+        }
+        .width('100%')
+        .clip(true)
+      }
+      .width('86%')
+      .constraintSize({ maxWidth: 440 })
+      .padding(16)
+      .backgroundColor(uiMaterialBackground(uiDialogSurfaceBackground()))
+      .shadow(uiDialogSurfaceShadow())
+      .borderRadius(uiDialogSurfaceRadius())
+      .backgroundBlurStyle(uiDialogBlurStyle(), uiDialogBlurOptions())
+      .systemMaterial(uiDialogMaterial())
+      .onAreaChange((_oldArea: Area, newArea: Area) => {
+        this.popupWidth = Number.parseFloat(newArea.width.toString());
+        this.popupHeight = Number.parseFloat(newArea.height.toString());
+      })
+      .transition(TransitionEffect.OPACITY
+        .combine(TransitionEffect.scale({ x: 0.96, y: 0.96 }))
+        .animation({ duration: 180, curve: Curve.EaseOut }))
+    }
+    .width('100%')
+    .height('100%')
+  }
+}
+
+@Component
+struct TagVoteRow {
+  @Prop isEnabled: boolean = true;
+  @Prop upSelected: boolean = false;
+  @Prop downSelected: boolean = false;
+  onVote: (vote: number) => void = (_vote: number) => {};
+
+  build() {
+    Row() {
+      TagVoteCell({
+        symbolIcon: $r('sys.symbol.arrow_up_circle'),
+        label: 'Vote+',
+        isEnabled: this.isEnabled,
+        selected: this.upSelected,
+        votePositive: true,
+        onTap: () => {
+          this.onVote(1);
+        }
+      })
+      .layoutWeight(1)
+      Divider()
+        .vertical(true)
+        .height(26)
+        .strokeWidth(0.5)
+        .color(themeDividerColor())
+      TagVoteCell({
+        symbolIcon: $r('sys.symbol.arrow_down_circle'),
+        label: 'Vote-',
+        isEnabled: this.isEnabled,
+        selected: this.downSelected,
+        votePositive: false,
+        onTap: () => {
+          this.onVote(-1);
+        }
+      })
+      .layoutWeight(1)
+    }
+    .width('100%')
+    .backgroundColor(uiListItemBackground(themeSurface()))
+    .border({ width: { bottom: 0.5 }, color: themeDividerColor() })
+    .borderRadius({ topLeft: uiRadius(16), topRight: uiRadius(16) })
+    .opacity(this.isEnabled ? 1 : 0.5)
+  }
+}
+
+@Component
+struct TagVoteCell {
+  symbolIcon: Resource = $r('sys.symbol.arrow_up_circle');
+  label: string = '';
+  @Prop isEnabled: boolean = true;
+  @Prop selected: boolean = false;
+  votePositive: boolean = true;
+  onTap: () => void = () => {};
+
+  private accent(): string {
+    return this.votePositive ? themeSuccessText() : themeDangerText();
+  }
+
+  private contentColor(): ResourceColor {
+    if (!this.isEnabled) {
+      return themeInactiveActionText();
+    }
+    return this.selected ? this.accent() : uiMaterialForegroundColor(themePrimaryText());
+  }
+
+  private iconColor(): ResourceColor {
+    if (!this.isEnabled) {
+      return themeInactiveActionText();
+    }
+    return this.selected ? this.accent() : uiMaterialForegroundColor(themeSecondaryText());
+  }
+
+  build() {
+    Row({ space: 8 }) {
+      SymbolGlyph(this.symbolIcon)
+        .fontSize(18)
+        .fontColor([this.iconColor()])
+      Text(uiText(this.label))
+        .fontSize(15)
+        .fontWeight(FontWeight.Medium)
+        .fontColor(this.contentColor())
+      if (this.selected) {
+        SymbolGlyph($r('sys.symbol.checkmark'))
+          .fontSize(14)
+          .fontColor([this.accent()])
+      }
+    }
+    .width('100%')
+    .height(49)
+    .justifyContent(FlexAlign.Center)
+    .onClick(() => {
+      if (this.isEnabled) {
+        this.onTap();
+      }
+    })
+  }
+}
+
+@Component
+struct TagSettingsRow {
+  symbolIcon: Resource = $r('sys.symbol.square_grid_2x2');
+  label: string = '';
+  isEnabled: boolean = true;
+  selected: boolean = false;
+  navigation: boolean = false;
+  danger: boolean = false;
+  accentColor: string = '';
+  firstInGroup: boolean = false;
+  lastInGroup: boolean = false;
+  onTap: () => void = () => {};
+
+  private accent(): string {
+    return this.accentColor.length > 0 ? this.accentColor : themeAccentTextColor();
+  }
+
+  private textColor(): ResourceColor {
+    if (!this.isEnabled) {
+      return themeInactiveActionText();
+    }
+    if (this.selected) {
+      return this.accent();
+    }
+    return this.danger ? themeDangerText() : uiMaterialForegroundColor(themePrimaryText());
+  }
+
+  private iconColor(): ResourceColor {
+    if (!this.isEnabled) {
+      return themeInactiveActionText();
+    }
+    if (this.selected) {
+      return this.accent();
+    }
+    return this.danger ? themeDangerText() : uiMaterialForegroundColor(themeSecondaryText());
+  }
+
+  build() {
+    Row() {
+      SymbolGlyph(this.symbolIcon)
+        .fontSize(18)
+        .fontColor([this.iconColor()])
+      Text(uiText(this.label))
+        .fontSize(15)
+        .fontWeight(FontWeight.Medium)
+        .fontColor(this.textColor())
+        .layoutWeight(1)
+        .maxLines(1)
+        .textOverflow({ overflow: TextOverflow.Ellipsis })
+        .margin({ left: 12 })
+      if (this.selected) {
+        SymbolGlyph($r('sys.symbol.checkmark'))
+          .fontSize(16)
+          .fontColor([this.accent()])
+      } else if (this.navigation) {
+        SymbolGlyph($r('sys.symbol.chevron_right'))
+          .fontSize(16)
+          .fontColor([themeTertiaryText()])
+      }
+    }
+    .width('100%')
+    .padding(14)
+    .backgroundColor(uiListItemBackground(themeSurface()))
+    .border({ width: { bottom: this.lastInGroup ? 0 : 0.5 }, color: themeDividerColor() })
+    .borderRadius({
+      topLeft: this.firstInGroup ? uiRadius(16) : 0,
+      topRight: this.firstInGroup ? uiRadius(16) : 0,
+      bottomLeft: this.lastInGroup ? uiRadius(16) : 0,
+      bottomRight: this.lastInGroup ? uiRadius(16) : 0
+    })
+    .opacity(this.isEnabled ? 1 : 0.5)
+    .onClick(() => {
+      if (this.isEnabled) {
+        this.onTap();
+      }
+    })
+  }
+}
+
+function createEmptyTagInfo(): GalleryTagInfo {
+  return { id: 0, namespace: '', tag: '', fullTag: '' };
+}
+
+function translatedTagLabel(info: GalleryTagInfo): string {
+  if (!shouldShowTagTranslations()) {
+    return '';
+  }
+  const translated = ehTagTranslationStore.translate(info.namespace, info.tag);
+  return translated.length > 0 ? translated : '';
+}
+
+@Component
+struct ArchiveOptionsOverlay {
+  @State popupWidth: number = 0;
+  @State popupHeight: number = 0;
+  @Prop mode: string = '';
+  @Prop statusText: string = '';
+  @Prop busy: boolean = false;
+  @Prop archiverInfo: ArchiverInfo = { funds: '', options: [] };
+  @Prop hathArchiveList: HathArchiveList = { formParamOr: '', options: [] };
+  @Prop torrentList: TorrentInfo[] = [];
+  onDismiss: () => void = () => {};
+  onSelectArchiverOption: (option: ArchiverOption) => void = (_option: ArchiverOption) => {};
+  onSelectHathOption: (option: ArchiveOption) => void = (_option: ArchiveOption) => {};
+  onSelectTorrent: (torrent: TorrentInfo) => void = (_torrent: TorrentInfo) => {};
+
+  private title(): string {
+    if (this.mode === 'torrent') {
+      return uiText('Torrents');
+    }
+    return this.mode === 'hath' ? uiText('H@H') : uiText('Archive');
+  }
+
+  private emptyText(): string {
+    if (this.busy) {
+      return uiText('Loading...');
+    }
+    if (this.mode === 'torrent') {
+      return uiText('No torrents');
+    }
+    return this.mode === 'hath' ? uiText('No H@H archives') : uiText('No archiver options');
+  }
+
+  private torrentSubtitle(torrent: TorrentInfo): string {
+    const parts: string[] = [];
+    if (torrent.posted.length > 0) {
+      parts.push(torrent.posted);
+    }
+    if (torrent.size.length > 0) {
+      parts.push(torrent.size);
+    }
+    parts.push(uiText('Seeds') + ' ' + torrent.seeds.toString());
+    parts.push(uiText('Downloads') + ' ' + torrent.downloads.toString());
+    return parts.join(' · ');
+  }
+
+  build() {
+    Stack({ alignContent: Alignment.Center }) {
+      PopupScrim({
+        showCutout: this.popupWidth > 0 && this.popupHeight > 0,
+        cutoutWidth: this.popupWidth,
+        cutoutHeight: this.popupHeight,
+        cutoutRadius: uiDialogSurfaceRadius(),
+        onDismiss: () => {
+          this.onDismiss();
+        }
+      })
+
+      Column({ space: 0 }) {
+        Row() {
+          Text(this.title())
+            .fontSize(18)
+            .fontWeight(FontWeight.Bold)
+            .fontColor(themePrimaryText())
+            .layoutWeight(1)
+          Button(uiText('Cancel'))
+            .type(ButtonType.Normal)
+            .height(34)
+            .fontSize(13)
+            .fontColor(uiMaterialForegroundColor(themeSecondaryText()))
+            .backgroundColor(uiMaterialBackground(themeSurfaceVariant()))
+            .borderRadius(uiRadius(6))
+            .backgroundEffect(uiTransparentButtonBackgroundEffect())
+            .systemMaterial(uiButtonMaterial())
+            .onClick(() => {
+              this.onDismiss();
+            })
+        }
+        .width('100%')
+        .padding({ left: 18, right: 18, top: 16, bottom: 12 })
+
+        if (this.statusText.length > 0 || this.archiverInfo.funds.length > 0) {
+          Text(this.statusText.length > 0 ? uiStatusText(this.statusText) : this.archiverInfo.funds)
+            .fontSize(13)
+            .fontColor(themeSecondaryText())
+            .width('100%')
+            .padding({ left: 18, right: 18, bottom: 10 })
+        }
+
+        Divider().height(1).color(themeDividerColor())
+
+        Scroll() {
+          Column({ space: 0 }) {
+            if (this.mode === 'torrent') {
+              if (this.torrentList.length === 0) {
+                ArchiveEmptyRow({ text: this.emptyText() })
+              }
+              ForEach(this.torrentList, (torrent: TorrentInfo) => {
+                ArchiveOptionRow({
+                  title: torrent.name,
+                  subtitle: this.torrentSubtitle(torrent),
+                  busy: this.busy,
+                  onTap: () => {
+                    this.onSelectTorrent(torrent);
+                  }
+                })
+              }, (torrent: TorrentInfo) => torrent.magnetUrl)
+            } else if (this.mode === 'hath') {
+              if (this.hathArchiveList.options.length === 0) {
+                ArchiveEmptyRow({ text: this.emptyText() })
+              }
+              ForEach(this.hathArchiveList.options, (option: ArchiveOption) => {
+                ArchiveOptionRow({
+                  title: option.label,
+                  subtitle: option.value,
+                  busy: this.busy,
+                  onTap: () => {
+                    this.onSelectHathOption(option);
+                  }
+                })
+              }, (option: ArchiveOption) => option.value + ':' + option.label)
+            } else {
+              if (this.archiverInfo.options.length === 0) {
+                ArchiveEmptyRow({ text: this.emptyText() })
+              }
+              ForEach(this.archiverInfo.options, (option: ArchiverOption) => {
+                ArchiveOptionRow({
+                  title: uiText(option.label),
+                  subtitle: option.cost.length > 0 || option.size.length > 0 ?
+                    option.cost + (option.cost.length > 0 && option.size.length > 0 ? ' / ' : '') + option.size :
+                    option.url,
+                  busy: this.busy,
+                  onTap: () => {
+                    this.onSelectArchiverOption(option);
+                  }
+                })
+              }, (option: ArchiverOption) => option.kind + ':' + option.url)
+            }
+          }
+        }
+        .width('100%')
+        .constraintSize({ maxHeight: 360 })
+      }
+      .width('88%')
+      .constraintSize({ maxWidth: 520 })
+      .backgroundColor(uiMaterialBackground(uiDialogSurfaceBackground()))
+      .shadow(uiDialogSurfaceShadow())
+      .clip(true)
+      .borderRadius(uiDialogSurfaceRadius())
+      .backgroundBlurStyle(uiDialogBlurStyle(), uiDialogBlurOptions())
+      .systemMaterial(uiDialogMaterial())
+      .onAreaChange((_oldArea: Area, newArea: Area) => {
+        this.popupWidth = Number.parseFloat(newArea.width.toString());
+        this.popupHeight = Number.parseFloat(newArea.height.toString());
+      })
+      .transition(TransitionEffect.OPACITY
+        .combine(TransitionEffect.scale({ x: 0.96, y: 0.96 }))
+        .animation({ duration: 180, curve: Curve.EaseOut }))
+    }
+    .width('100%')
+    .height('100%')
+  }
+}
+
+@Component
+struct ArchiveOptionRow {
+  @Prop title: string = '';
+  @Prop subtitle: string = '';
+  @Prop busy: boolean = false;
+  onTap: () => void = () => {};
+
+  build() {
+    Column() {
+      Row() {
+        Column({ space: 4 }) {
+          Text(this.title)
+            .fontSize(15)
+            .fontColor(this.busy ? themeSecondaryText() : themePrimaryText())
+            .maxLines(1)
+            .textOverflow({ overflow: TextOverflow.Ellipsis })
+            .width('100%')
+          if (this.subtitle.length > 0) {
+            Text(this.subtitle)
+              .fontSize(12)
+              .fontColor(themeSecondaryText())
+              .maxLines(1)
+              .textOverflow({ overflow: TextOverflow.Ellipsis })
+              .width('100%')
+          }
+        }
+        .layoutWeight(1)
+        SymbolGlyph($r('sys.symbol.chevron_forward'))
+          .fontSize(18)
+          .fontColor([themeSecondaryText()])
+      }
+      .width('100%')
+      .padding({ left: 18, right: 18, top: 12, bottom: 12 })
+      Divider().height(1).color(themeDividerColor()).margin({ left: 18 })
+    }
+    .width('100%')
+    .backgroundColor(themeSurface())
+    .onClick(() => {
+      if (!this.busy) {
+        this.onTap();
+      }
+    })
+  }
+}
+
+@Component
+struct ArchiveEmptyRow {
+  @Prop text: string = '';
+
+  build() {
+    Text(this.text)
+      .fontSize(14)
+      .fontColor(themeSecondaryText())
+      .width('100%')
+      .padding(24)
+      .textAlign(TextAlign.Center)
+  }
+}

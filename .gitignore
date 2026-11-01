@@ -1,0 +1,36 @@
+/.appanalyzer/
+/.hvigor/
+/.idea/
+/build/
+/entry/build/
+/oh_modules/
+/entry/oh_modules/
+*.iml
+*.hap
+*.app
+local.properties
+Crash_*.dmp
+/artifacts/
+/entry/.cxx/
+/entry/.test/
+
+# 本地交接/运维记录：含构建机地址与账号口令，绝不进公开仓库
+/docs/HANDOFF_*.md
+# 开发期随手截的图，以及构建配置备份
+/*.jpeg
+/*.jpg
+*.bak
+
+# 本地过程产物：审计报告、测试截图、构建备份，只留在本机
+/.local/
+# 签名配置含本机路径与口令指纹，仓库里只放 .example
+/build-profile.json5
+
+# 本地测试与构建辅助，不进发布仓库
+/tests/
+/package.json
+/package-lock.json
+/artwork/
+# IDE 索引配置，不进仓库
+.clangd
+.clang-tidy

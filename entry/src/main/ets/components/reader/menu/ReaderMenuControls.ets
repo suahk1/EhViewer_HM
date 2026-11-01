@@ -1,0 +1,364 @@
+import {
+  normalizeAutoTransferTimeOption,
+  normalizeBrightnessLevelOption,
+  normalizeUltraDarkLightnessOption,
+  uiText,
+  uiValue
+} from '../../../shared/AppRuntime';
+import { readerSelectColors, selectArrowModifier } from '../../../shared/SelectControlStyle';
+import {
+  themeDividerColor,
+  themePrimaryColor,
+  themePrimaryText,
+  themeSecondaryText
+} from '../../../shared/AppPalette';
+import { PopupScrim } from '../../PopupScrim';
+import {
+  isHarmonyMaterialEnabled,
+  uiButtonHighlightBorderColor,
+  uiButtonMaterial,
+  uiTransparentButtonBackgroundEffect,
+  uiDialogBlurOptions,
+  uiDialogBlurStyle,
+  uiDialogMaterial,
+  uiDialogSurfaceBackground,
+  uiDialogSurfaceRadius,
+  uiDialogSurfaceShadow,
+  uiPopupBlurOptions,
+  uiPopupBlurStyle,
+  uiReaderOptionRowHeight,
+  uiReaderSelectControlBackground,
+  uiReaderSelectPopupBackground,
+  uiReaderOptionSegmentMaterial,
+  uiSelectorHeight,
+  uiSwitchHeight,
+  uiSwitchWidth,
+  uiMaterialBackground
+} from '../../../shared/AppSurfaceStyle';
+
+@Component
+// Reader menu leaves keep component form because hosts reuse them with different modifiers.
+// eslint-disable-next-line @performance/avoid-overusing-custom-component-check
+export struct ReaderPopupBackdrop {
+  @Prop cutoutWidth: number = 0;
+  @Prop cutoutHeight: number = 0;
+  @Prop cutoutRadius: number = 0;
+  onDismiss: () => void = () => {};
+
+  build() {
+    PopupScrim({
+      showCutout: this.cutoutWidth > 0 && this.cutoutHeight > 0,
+      cutoutWidth: this.cutoutWidth,
+      cutoutHeight: this.cutoutHeight,
+      cutoutRadius: this.cutoutRadius,
+      onDismiss: () => {
+        this.onDismiss();
+      }
+    })
+    .transition(TransitionEffect.OPACITY.animation({ duration: 180, curve: Curve.EaseInOut }))
+  }
+}
+
+@Component
+// eslint-disable-next-line @performance/avoid-overusing-custom-component-check
+export struct ReaderImageActionDialog {
+  onRefresh: () => void = () => {};
+  onShare: () => void = () => {};
+  onSaveToAlbum: (result: SaveButtonOnClickResult) => void = (_result: SaveButtonOnClickResult) => {};
+  onSave: () => void = () => {};
+
+  build() {
+    Column({ space: 0 }) {
+      ReaderImageActionButton({
+        label: uiText('Refresh'),
+        symbolIcon: $r('sys.symbol.arrow_clockwise'),
+        onTap: this.onRefresh
+      })
+      ReaderMenuDivider()
+      ReaderImageActionButton({
+        label: uiText('Share'),
+        symbolIcon: $r('sys.symbol.share'),
+        onTap: this.onShare
+      })
+      ReaderMenuDivider()
+      SaveButton({
+        icon: SaveIconStyle.LINES,
+        text: SaveDescription.SAVE_TO_GALLERY,
+        buttonType: ButtonType.Normal
+      })
+        .width('100%')
+        .height(48)
+        .padding({ left: 16, right: 16 })
+        .backgroundColor(Color.Transparent)
+        .borderRadius(0)
+        .fontSize(15)
+        .fontColor(themePrimaryText())
+        .iconColor(themePrimaryText())
+        .iconSize(20)
+        .layoutDirection(SecurityComponentLayoutDirection.HORIZONTAL)
+        .onClick((_event: ClickEvent, result: SaveButtonOnClickResult) => {
+          this.onSaveToAlbum(result);
+        })
+      ReaderMenuDivider()
+      ReaderImageActionButton({
+        label: uiText('Save to...'),
+        symbolIcon: $r('sys.symbol.save'),
+        onTap: this.onSave
+      })
+    }
+    .width('78%')
+    .constraintSize({ maxWidth: 360 })
+    .padding({ top: 6, bottom: 6 })
+    .backgroundColor(uiMaterialBackground(uiDialogSurfaceBackground()))
+    .transition(TransitionEffect.OPACITY.animation({ duration: 180, curve: Curve.EaseInOut }))
+    .shadow(uiDialogSurfaceShadow())
+    .clip(true)
+    .borderRadius(uiDialogSurfaceRadius())
+    .backgroundBlurStyle(uiDialogBlurStyle(), uiDialogBlurOptions())
+    .systemMaterial(uiDialogMaterial())
+  }
+}
+
+@Component
+// eslint-disable-next-line @performance/avoid-overusing-custom-component-check
+struct ReaderImageActionButton {
+  label: string = '';
+  symbolIcon: Resource = $r('sys.symbol.circle');
+  onTap: () => void = () => {};
+
+  build() {
+    Button({ type: ButtonType.Normal, stateEffect: true }) {
+      Row() {
+        SymbolGlyph(this.symbolIcon)
+          .fontSize(20)
+          .fontColor([themePrimaryText()])
+        Text(this.label)
+          .fontSize(15)
+          .fontColor(themePrimaryText())
+          .margin({ left: 12 })
+          .layoutWeight(1)
+          .textAlign(TextAlign.End)
+      }
+      .width('100%')
+      .padding({ left: 16, right: 16 })
+    }
+    .width('100%')
+    .height(48)
+    .backgroundColor(uiMaterialBackground(Color.Transparent))
+    .borderRadius(0)
+    .backgroundEffect(uiTransparentButtonBackgroundEffect())
+    .systemMaterial(uiButtonMaterial())
+    .onClick(() => {
+      this.onTap();
+    })
+  }
+}
+
+@Component
+// eslint-disable-next-line @performance/avoid-overusing-custom-component-check
+export struct ReaderMenuDivider {
+  build() {
+    Divider()
+      .height(1)
+      .color(themeDividerColor())
+      .margin({ left: 16, right: 16 })
+  }
+}
+
+@Component
+// eslint-disable-next-line @performance/avoid-overusing-custom-component-check
+export struct ReaderMenuSelect {
+  @Prop label: string = '';
+  @Prop options: string[] = [];
+  @Prop value: string = '';
+  onChange: (v: string) => void = () => {};
+
+  build() {
+    Row() {
+      Text(this.label)
+        .fontSize(15)
+        .fontColor(themePrimaryText())
+        .layoutWeight(1)
+      Select(this.options.map((option: string) => ({ value: uiValue(option) } as SelectOption)))
+        .id('reader-menu-select-' + this.label + '-' + this.value)
+        .selected(readerMenuOptionIndex(this.options, this.value))
+        .value(uiValue(this.value))
+        .font({ size: 15 })
+        .fontColor(readerSelectColors().buttonText)
+        .backgroundColor(uiMaterialBackground(uiReaderSelectControlBackground(readerSelectColors().buttonBackground)))
+        .backgroundBlurStyle(isHarmonyMaterialEnabled() ? BlurStyle.NONE : uiPopupBlurStyle())
+        .arrowModifier(selectArrowModifier(readerSelectColors().arrow))
+        .menuOutline({ width: 1, color: readerSelectColors().outline })
+        .selectedOptionFontColor(readerSelectColors().selectedOptionText)
+        .selectedOptionBgColor(readerSelectColors().selectedOptionBackground)
+        .optionFont({ size: 14 })
+        .optionFontColor(readerSelectColors().optionText)
+        .optionBgColor(readerSelectColors().optionBackground)
+        .menuBackgroundBlurStyle(uiPopupBlurStyle())
+        .menuBackgroundBlurStyleOptions(uiPopupBlurOptions())
+        .menuBackgroundColor(uiReaderSelectPopupBackground(readerSelectColors().menuBackground))
+        .border({ width: 1, color: uiButtonHighlightBorderColor() })
+        .systemMaterial(uiReaderOptionSegmentMaterial())
+        .onSelect((index: number) => {
+          if (index >= 0 && index < this.options.length) {
+            this.onChange(this.options[index]);
+          }
+        })
+        .height(uiSelectorHeight())
+        .constraintSize({ minWidth: 148, maxWidth: 220 })
+        .shadow(isHarmonyMaterialEnabled() ? {
+          radius: 0,
+          color: Color.Transparent,
+          offsetX: 0,
+          offsetY: 0
+        } : {
+          radius: 10,
+          color: '#66000000',
+          offsetX: 0,
+          offsetY: 3
+        })
+    }
+    .width('100%')
+    .height(uiReaderOptionRowHeight())
+    .padding({
+      left: 16,
+      right: 16,
+      top: (uiReaderOptionRowHeight() - uiSelectorHeight()) / 2,
+      bottom: (uiReaderOptionRowHeight() - uiSelectorHeight()) / 2
+    })
+    .alignItems(VerticalAlign.Center)
+  }
+}
+
+@Component
+export struct ReaderMenuSlider {
+  label: string = '';
+  @Prop @Watch('onValueChange') value: number = 0;
+  min: number = 0;
+  max: number = 100;
+  step: number = 1;
+  resetValue: number | undefined = undefined;
+  valueText: (v: number) => string = (v: number): string => v.toString();
+  onChange: (v: number) => void = () => {};
+  @State liveValue: number = 0;
+
+  aboutToAppear(): void {
+    this.liveValue = this.value;
+  }
+
+  onValueChange(): void {
+    this.liveValue = this.value;
+  }
+
+  build() {
+    Column({ space: 4 }) {
+      Row() {
+        Text(this.label)
+          .fontSize(15)
+          .fontColor(themePrimaryText())
+          .layoutWeight(1)
+        Text(this.valueText(this.liveValue))
+          .fontSize(14)
+          .fontColor(themeSecondaryText())
+          .textAlign(TextAlign.End)
+          .maxLines(1)
+      }
+      .width('100%')
+      .alignItems(VerticalAlign.Center)
+      .gesture(TapGesture({ count: 2 })
+        .onAction(() => {
+          if (this.resetValue !== undefined) {
+            this.liveValue = this.resetValue;
+            this.onChange(this.resetValue);
+          }
+        }))
+
+      Slider({
+        value: this.liveValue,
+        min: this.min,
+        max: this.max,
+        step: this.step
+      })
+        .width('100%')
+        .onChange((value: number, _mode: SliderChangeMode) => {
+          this.liveValue = Math.max(this.min, Math.min(this.max, Math.round(value)));
+          this.onChange(this.liveValue);
+        })
+    }
+    .width('100%')
+    .padding({ left: 16, right: 16, top: 14, bottom: 0 })
+  }
+}
+
+function readerMenuOptionIndex(options: string[], value: string): number {
+  for (let i = 0; i < options.length; i++) {
+    if (options[i] === value) {
+      return i;
+    }
+  }
+  return 0;
+}
+
+export function readerAutoTransferSliderValue(value: string): number {
+  return Number.parseInt(normalizeAutoTransferTimeOption(value));
+}
+
+export function readerAutoTransferValue(value: number): string {
+  return Math.max(1, Math.min(20, Math.round(value))).toString() + 's';
+}
+
+export function readerBrightnessSliderValue(value: string): number {
+  const numberValue = Number.parseInt(value);
+  if (Number.isNaN(numberValue)) {
+    return 50;
+  }
+  return Math.max(0, Math.min(100, numberValue));
+}
+
+export function readerBrightnessValue(value: number): string {
+  return normalizeBrightnessLevelOption(Math.max(0, Math.min(100, Math.round(value))).toString() + '%');
+}
+
+export function readerUltraDarkSliderValue(value: string): number {
+  const numberValue = Number.parseInt(value);
+  if (Number.isNaN(numberValue)) {
+    return 50;
+  }
+  return Math.max(1, Math.min(100, numberValue));
+}
+
+export function readerUltraDarkValue(value: number): string {
+  return normalizeUltraDarkLightnessOption(Math.max(1, Math.min(100, Math.round(value))).toString() + '%');
+}
+
+
+@Component
+// eslint-disable-next-line @performance/avoid-overusing-custom-component-check
+export struct ReaderMenuToggle {
+  label: string = '';
+  @Prop value: boolean = false;
+  onChange: (v: boolean) => void = () => {};
+
+  build() {
+    Row() {
+      Text(this.label)
+        .fontSize(15)
+        .fontColor(themePrimaryText())
+        .layoutWeight(1)
+      Toggle({ type: ToggleType.Switch, isOn: this.value })
+        .width(uiSwitchWidth())
+        .height(uiSwitchHeight())
+        .onChange((v: boolean) => { this.onChange(v); })
+        .selectedColor(themePrimaryColor())
+    }
+    .width('100%')
+    .height(uiReaderOptionRowHeight())
+    .padding({
+      left: 16,
+      right: 16,
+      top: (uiReaderOptionRowHeight() - uiSwitchHeight()) / 2,
+      bottom: (uiReaderOptionRowHeight() - uiSwitchHeight()) / 2
+    })
+    .alignItems(VerticalAlign.Center)
+  }
+}

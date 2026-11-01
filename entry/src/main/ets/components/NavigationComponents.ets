@@ -1,0 +1,1380 @@
+import { GalleryRoute } from '../model/GalleryModels';
+import { ehCookieStore } from '../services/EhCookieStore';
+import { DownloadInfo, ehDownloadStore } from '../services/EhDownloadStore';
+import { HomeLimits, HomeLimitsResult, homeLimitsService } from '../services/HomeLimitsService';
+import { appSettingsStore } from '../services/AppSettingsStore';
+import { MAIN_CONTENT_WIDTH_VP_KEY } from '../services/WindowChromeController';
+import { BOTTOM_AVOID_HEIGHT_KEY, LANGUAGE_REVISION_KEY, STATUS_BAR_HEIGHT_KEY, THEME_REVISION_KEY, downloadQueueSummary, getAbilityContext, uiText, uiStatusText, DrawerItem, DRAWER_ITEMS } from '../shared/AppRuntime';
+import {
+  REMOTE_SYNC_ACTIVE_KEY,
+  REMOTE_SYNC_DETAIL_VISIBLE_KEY,
+  REMOTE_SYNC_PROGRESS_PERCENT_KEY,
+  REMOTE_SYNC_STATUS_DETAIL_KEY,
+  REMOTE_SYNC_STATUS_TEXT_KEY
+} from '../services/RemoteStorageSyncService';
+import { RemoteSyncStatusRow } from './RemoteSyncDetailOverlay';
+import {
+  themeDividerColor,
+  themeFieldBackground,
+  themeOnPrimaryActionBackground,
+  themeOnPrimaryActionDisabledBackground,
+  themeOnPrimaryActionStrongBackground,
+  themeOnPrimaryDangerBackground,
+  themeAccentTextColor,
+  themePrimaryText,
+  themeSecondaryText,
+  themeSelectedBackground,
+  themeSelectedBackgroundLight,
+  themeSelectedIndicatorColor,
+  themeSelectedText,
+  themeSurface,
+  themeSurfaceVariant,
+  themeTransparentColor
+} from '../shared/AppPalette';
+import {
+  uiAdaptiveTitleSize,
+  uiAdaptiveToolbarHeight,
+  uiButtonMaterial,
+  uiTransparentButtonBackgroundEffect,
+  uiButtonHighlightBorderColor,
+  uiCardRadius,
+  uiControlRadius,
+  uiGlassBarEffect,
+  uiMaterialBackground,
+  uiPillRadius,
+  uiPopupBlurOptions,
+  uiPopupBlurStyle,
+  uiPopupEffectBackground,
+  uiSearchFieldHeight,
+  uiTitleBarBackgroundEffect,
+  uiTitleBarFadeHeight
+} from '../shared/AppSurfaceStyle';
+import { TranslationText } from './TranslationComponents';
+
+function navigationBarBackground(): string {
+  return themeTransparentColor();
+}
+
+function navigationTitleText(): string {
+  return themePrimaryText();
+}
+
+function navigationSecondaryText(): string {
+  return themeSecondaryText();
+}
+
+function navigationActionBackground(color: string): ResourceColor {
+  return uiMaterialBackground(color);
+}
+
+// 侧栏只剩账号相关入口：主页/收藏/下载/设置在底栏，订阅/热门/排行/历史在底栏右端箭头里，
+// 这里再列一遍就是两套导航。保留账号与登录、设置两条即可。
+const ACCOUNT_ENTRIES: DrawerItem[] = [
+  { route: GalleryRoute.Session, title: 'Account and sign in', icon: 'A',
+    subtitle: 'Identity cookies and login state' },
+  { route: GalleryRoute.Settings, title: 'Settings', icon: 'G', subtitle: 'Preferences and about' }
+];
+
+// ===================================================================
+// EhDrawer  -- account panel (drawer chrome kept, navigation removed)
+// ===================================================================
+@Component
+export struct EhDrawer {
+  @Prop activeRoute: GalleryRoute = GalleryRoute.Home;
+  @Prop statusBarHeight: number = 0;
+  onSelect: (route: GalleryRoute) => void = () => {};
+
+  @State signedIn: boolean = false;
+  @State downloadSummary: string = '';
+  @StorageProp(REMOTE_SYNC_STATUS_TEXT_KEY) remoteSyncText: string = '';
+  @StorageProp(REMOTE_SYNC_STATUS_DETAIL_KEY) remoteSyncDetail: string = '';
+  @StorageProp(REMOTE_SYNC_ACTIVE_KEY) remoteSyncActive: boolean = false;
+  @StorageProp(REMOTE_SYNC_PROGRESS_PERCENT_KEY) remoteSyncPercent: number = -1;
+  @StorageProp(LANGUAGE_REVISION_KEY) languageRevision: number = 0;
+  @StorageProp(THEME_REVISION_KEY) themeRevision: number = 0;
+  @StorageProp(BOTTOM_AVOID_HEIGHT_KEY) bottomAvoidHeight: number = 0;
+  private unsubscribeDownloadStore: () => void = () => {};
+
+  aboutToAppear(): void {
+    this.signedIn = ehCookieStore.hasCookies();
+    this.unsubscribeDownloadStore();
+    this.unsubscribeDownloadStore = ehDownloadStore.subscribe((items: DownloadInfo[]) => {
+      this.downloadSummary = downloadQueueSummary(items);
+    }, () => {});
+    const ctx = getAbilityContext();
+    if (ctx !== undefined) {
+      ehDownloadStore.load(ctx).catch(() => {});
+    }
+  }
+
+  aboutToDisappear(): void {
+    this.unsubscribeDownloadStore();
+    this.unsubscribeDownloadStore = () => {};
+  }
+
+  build() {
+    Column() {
+      // ---- Header ----
+      Column() {
+        // status bar spacer
+        Column()
+          .height(this.statusBarHeight)
+          .width('100%')
+
+        Row() {
+          // Avatar
+          Text(this.signedIn ? uiText('EH') : '?')
+            .fontSize(22)
+            .fontWeight(FontWeight.Bold)
+            .fontColor(themeAccentTextColor())
+            .textAlign(TextAlign.Center)
+            .width(52)
+            .height(52)
+            .backgroundColor(themeSurface())
+            .borderRadius(uiPillRadius(26))
+
+          Column() {
+            Text(uiText('EhViewer HM'))
+              .fontSize(17)
+              .fontWeight(FontWeight.Bold)
+              .fontColor(navigationTitleText())
+
+            Text(this.signedIn ? uiText('Signed in') : uiText('Guest mode'))
+              .fontSize(13)
+              .fontColor(navigationSecondaryText())
+              .margin({ top: 3 })
+          }
+          .alignItems(HorizontalAlign.Start)
+          .margin({ left: 14 })
+          .layoutWeight(1)
+        }
+        .width('100%')
+        .padding({ left: 20, right: 20, top: 16, bottom: 20 })
+        .alignItems(VerticalAlign.Center)
+      }
+      .width('100%')
+      .backgroundColor(navigationBarBackground())
+
+      // ---- Account entries ----
+      List() {
+        ForEach(ACCOUNT_ENTRIES, (item: DrawerItem) => {
+          ListItem() {
+            DrawerNavItem({
+              item: item,
+              selected: item.route === this.activeRoute,
+              onTap: () => { this.onSelect(item.route); }
+            })
+          }
+          .reuseId('drawer-nav-item')
+        }, (item: DrawerItem) => item.route + ':' + this.activeRoute.toString())
+      }
+      .width('100%')
+      .height('100%')
+      .layoutWeight(1)
+      .backgroundColor(Color.Transparent)
+      .cachedCount(4)
+      .scrollBar(BarState.Off)
+      .divider({ strokeWidth: 0.5, color: themeDividerColor(), startMargin: 56, endMargin: 0 })
+
+      if (this.signedIn && appSettingsStore.getValue('show_eh_limits', 'On') === 'On') {
+        EhLimitsPanel()
+      }
+
+      // ---- Footer: remote sync status ----
+      if (this.remoteSyncText.length > 0) {
+        RemoteSyncStatusRow({
+          text: this.remoteSyncText,
+          detail: this.remoteSyncDetail,
+          active: this.remoteSyncActive,
+          percent: this.remoteSyncPercent,
+          onTap: () => {
+            AppStorage.setOrCreate<boolean>(REMOTE_SYNC_DETAIL_VISIBLE_KEY, true);
+          }
+        })
+      }
+
+      // ---- Footer: download summary ----
+      if (this.downloadSummary.length > 0) {
+        Row() {
+          SymbolGlyph($r('sys.symbol.arrow_down_circle'))
+            .fontSize(16)
+            .fontColor([themeSecondaryText()])
+          Text(uiStatusText('Downloads: ' + this.downloadSummary))
+            .fontSize(12)
+            .fontColor(themeSecondaryText())
+            .maxLines(1)
+            .textOverflow({ overflow: TextOverflow.Ellipsis })
+            .layoutWeight(1)
+            .margin({ left: 6 })
+        }
+        .width('100%')
+        .padding({ left: 16, right: 16, top: 10, bottom: 10 + this.bottomAvoidHeight })
+        .backgroundColor(themeSurfaceVariant())
+      }
+    }
+    .width(264)
+    .height('100%')
+    .backgroundColor(uiPopupEffectBackground(themeSurface()))
+    // 与顶栏、底部胶囊同一套玻璃参数，避免侧栏糊成一块实色板。
+    .backgroundEffect(uiGlassBarEffect())
+  }
+}
+
+@Component
+struct EhLimitsPanel {
+  @State limits: HomeLimits | null = null;
+  @State loading: boolean = false;
+  @State expanded: boolean = false;
+
+  aboutToAppear(): void {
+    this.limits = homeLimitsService.getCached();
+    if (this.limits === null) {
+      this.loadLimits(false);
+    }
+  }
+
+  private loadLimits(force: boolean): void {
+    if (this.loading) {
+      return;
+    }
+    this.loading = true;
+    homeLimitsService.load(force).then((result: HomeLimitsResult) => {
+      this.applyResult(result);
+    }).catch((error: Error) => {
+      this.showFailure(error.message);
+    });
+  }
+
+  private resetLimits(): void {
+    if (this.loading || this.limits === null) {
+      return;
+    }
+    if (this.limits.resetCost === 0) {
+      this.showToast('No quota reset is currently needed');
+      this.loadLimits(true);
+      return;
+    }
+    this.loading = true;
+    homeLimitsService.reset().then((result: HomeLimitsResult) => {
+      this.applyResult(result);
+    }).catch((error: Error) => {
+      this.showFailure(error.message);
+    });
+  }
+
+  private applyResult(result: HomeLimitsResult): void {
+    this.loading = false;
+    if (!result.ok || result.limits === null) {
+      this.showFailure(result.message);
+      return;
+    }
+    this.limits = result.limits;
+  }
+
+  private showFailure(_detail: string): void {
+    this.loading = false;
+    this.showToast('Failed to load EH limits');
+  }
+
+  private showToast(message: string): void {
+    try {
+      this.getUIContext().getPromptAction().showToast({ message: uiText(message) });
+    } catch (error) {
+    }
+  }
+
+  private limitSummary(): string {
+    if (this.limits === null) {
+      return this.loading ? uiText('Loading EH limits') : uiText('EH limits unavailable');
+    }
+    if (this.limits.total === 0) {
+      return uiText('IP-based limits');
+    }
+    return this.limits.used.toString() + '/' + this.limits.total.toString();
+  }
+
+  private gp(value: number): string {
+    return formatNumber(value) + ' GP';
+  }
+
+  @Builder
+  private limitDetailRow(value: string, label: string, reset: boolean = false) {
+    Row() {
+      Text(value)
+        .fontSize(12)
+        .fontWeight(FontWeight.Medium)
+        .fontColor(reset ? themeSelectedText() : themePrimaryText())
+
+      Text(uiText(label))
+        .fontSize(12)
+        .fontColor(reset ? themeSelectedText() : themeSecondaryText())
+        .margin({ left: 5 })
+    }
+    .justifyContent(FlexAlign.Center)
+    .width('100%')
+    .height(27)
+    .margin({ left: 12, right: 12, bottom: 3 })
+    .borderRadius(uiControlRadius(5))
+    .backgroundColor(reset ? themeSelectedBackground() : themeSurfaceVariant())
+    .onClick(() => {
+      if (reset) {
+        this.resetLimits();
+      }
+    })
+  }
+
+  build() {
+    Column() {
+      if (this.expanded && this.limits !== null) {
+        this.limitDetailRow(this.gp(this.limits.fromGalleryVisits), 'from gallery visits')
+        this.limitDetailRow(this.gp(this.limits.fromTorrentCompletions), 'from torrent completions')
+        this.limitDetailRow(this.gp(this.limits.fromArchiveDownloads), 'from archive downloads')
+        this.limitDetailRow(this.gp(this.limits.fromHentaiAtHome), 'from Hentai@Home')
+        this.limitDetailRow(this.gp(this.limits.resetCost), 'reset cost', true)
+      }
+
+      Row() {
+        Text(this.limitSummary())
+          .fontSize(14)
+          .fontWeight(FontWeight.Medium)
+          .fontColor(themePrimaryText())
+          .textAlign(TextAlign.Center)
+          .layoutWeight(1)
+          .height(36)
+          .onClick(() => {
+            if (this.limits === null) {
+              this.loadLimits(false);
+            } else {
+              this.expanded = !this.expanded;
+            }
+          })
+
+        if (this.loading) {
+          LoadingProgress()
+            .width(18)
+            .height(18)
+            .color(themeAccentTextColor())
+            .margin({ right: 10 })
+        } else {
+          SymbolGlyph($r('sys.symbol.arrow_clockwise'))
+            .fontSize(18)
+            .fontColor([themeSecondaryText()])
+            .width(34)
+            .height(34)
+            .onClick(() => { this.loadLimits(true); })
+        }
+      }
+      .width('100%')
+      .height(36)
+      .padding({ left: 8 })
+      .borderRadius(uiControlRadius(6))
+      .backgroundColor(themeSurfaceVariant())
+    }
+    .width('100%')
+    .padding({ left: 10, right: 10, top: 5, bottom: 5 })
+    .border({ width: { top: 0.5 }, color: themeDividerColor() })
+  }
+}
+
+function formatNumber(value: number): string {
+  const text = Math.max(0, Math.trunc(value)).toString();
+  return text.replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+}
+
+// ===================================================================
+// DrawerNavItem  -- a single row in the drawer list
+// ===================================================================
+@Component
+struct DrawerNavItem {
+  item: DrawerItem = { route: GalleryRoute.Home, title: '', icon: '', subtitle: '' };
+  selected: boolean = false;
+  onTap: () => void = () => {};
+  @StorageProp(LANGUAGE_REVISION_KEY) languageRevision: number = 0;
+
+  // Map old letter icons to sys.symbol
+  private symbolForRoute(route: GalleryRoute): Resource {
+    switch (route) {
+      case GalleryRoute.Home:         return $r('sys.symbol.house');
+      case GalleryRoute.Subscription: return $r('sys.symbol.star');
+      case GalleryRoute.WhatsHot:     return $r('sys.symbol.flame');
+      case GalleryRoute.TopLists:     return $r('sys.symbol.list_number');
+      case GalleryRoute.Favorites:    return $r('sys.symbol.heart');
+      case GalleryRoute.History:      return $r('sys.symbol.clock');
+      case GalleryRoute.Downloads:    return $r('sys.symbol.arrow_down_circle');
+      case GalleryRoute.Session:      return $r('sys.symbol.checkmark_circle');
+      case GalleryRoute.Settings:     return $r('sys.symbol.gearshape');
+      default:                        return $r('sys.symbol.circle');
+    }
+  }
+
+  build() {
+    Row() {
+      // Selection indicator
+      Column()
+        .width(3)
+        .height(28)
+        .borderRadius(uiControlRadius(2))
+        .backgroundColor(this.selected ? themeSelectedIndicatorColor() : themeTransparentColor())
+        .margin({ right: 10 })
+
+      // Icon badge
+      Column() {
+        SymbolGlyph(this.symbolForRoute(this.item.route))
+          .fontSize(20)
+          .fontColor([this.selected ? themeSelectedText() : themeSecondaryText()])
+      }
+      .width(38)
+      .height(38)
+      .justifyContent(FlexAlign.Center)
+      .alignItems(HorizontalAlign.Center)
+      .backgroundColor(this.selected ? themeSelectedBackgroundLight() : themeTransparentColor())
+      .borderRadius(uiCardRadius(10))
+
+      Column() {
+        Text(uiText(this.item.title))
+          .fontSize(15)
+          .fontWeight(this.selected ? FontWeight.Medium : FontWeight.Normal)
+          .fontColor(this.selected ? themeSelectedText() : themePrimaryText())
+          .maxLines(1)
+          .textOverflow({ overflow: TextOverflow.Ellipsis })
+
+        Text(uiText(this.item.subtitle))
+          .fontSize(11)
+          .fontColor(themeSecondaryText())
+          .maxLines(1)
+          .textOverflow({ overflow: TextOverflow.Ellipsis })
+          .margin({ top: 1 })
+      }
+      .alignItems(HorizontalAlign.Start)
+      .layoutWeight(1)
+      .margin({ left: 10 })
+    }
+    .width('100%')
+    .height(60)
+    .padding({ left: 8, right: 16 })
+    .backgroundColor(this.selected ? themeSelectedBackground() : themeTransparentColor())
+    .alignItems(VerticalAlign.Center)
+    .onClick(() => { this.onTap(); })
+  }
+}
+
+// ===================================================================
+// EhNavBar  -- top app bar used by list pages
+//   Supports: immersive (extends under status bar), scroll-hide,
+//             search mode and action mode
+// ===================================================================
+@Component
+export struct EhTitleBarBackdrop {
+  @Prop barBackdropHeight: number = 0;
+
+  private blurFadeStart(): number {
+    if (this.barBackdropHeight <= 0) {
+      return 0;
+    }
+    return Math.max(0, Math.min(1,
+      (this.barBackdropHeight - uiTitleBarFadeHeight()) / this.barBackdropHeight));
+  }
+
+  private blurFadeStop(fraction: number): number {
+    const start = this.blurFadeStart();
+    return start + (1 - start) * fraction;
+  }
+
+  build() {
+    Stack({ alignContent: Alignment.TopStart }) {
+      Stack({ alignContent: Alignment.TopStart }) {
+        Column()
+          .width('100%')
+          .height('100%')
+          .backgroundEffect(uiTitleBarBackgroundEffect())
+
+        Column()
+          .width('100%')
+          .height('100%')
+          .linearGradient({
+            angle: 180,
+            colors: [[Color.White, 0.0], [Color.White, this.blurFadeStart()],
+              ['rgba(255,255,255,0.72)', this.blurFadeStop(0.24)],
+              ['rgba(255,255,255,0.20)', this.blurFadeStop(0.64)],
+              [Color.Transparent, 1.0]]
+          })
+          .blendMode(BlendMode.DST_IN, BlendApplyType.OFFSCREEN)
+      }
+      .width('100%')
+      .height('100%')
+      .blendMode(BlendMode.SRC_OVER, BlendApplyType.OFFSCREEN)
+    }
+    .width('100%')
+    .height(this.barBackdropHeight)
+    .backgroundColor(Color.Transparent)
+    .hitTestBehavior(HitTestMode.None)
+  }
+}
+
+@Component
+export struct EhNavBar {
+  // 左上角不再是"菜单"，而是账号入口：已登录显示 EH，游客显示 ?。
+  @State signedIn: boolean = ehCookieStore.hasCookies();
+  @Prop statusBarHeight: number = 0;  // in vp
+  @Prop toolbarHeight: number = 0;
+  @Prop title: string = '';
+  @Prop subtitle: string = '';
+  @Prop searchMode: boolean = false;
+  @Prop keyword: string = '';
+  @Prop searchPlaceholder: string = '';
+  @Prop filterActive: boolean = false;
+  @Prop showClear: boolean = false;
+  @Prop canClear: boolean = false;
+  @Prop showFavoriteButton: boolean = false;
+  @Prop showBookmarkButton: boolean = false;
+  @Prop showSearchButton: boolean = false;
+  @Prop showRefreshButton: boolean = true;
+  @Prop showBackButton: boolean = false;
+  @Prop searchShowsAdvancedButton: boolean = false;
+  @Prop showBackdrop: boolean = true;
+  // translate offset injected by parent for scroll-hide; 0 = visible, negative = hidden
+  @Prop translateY: number = 0;
+  onMenu: () => void = () => {};
+  onBack: () => void = () => {};
+  onSearch: () => void = () => {};
+  onSearchFocus: () => void = () => {};
+  onAdvanced: () => void = () => {};
+  onFavoriteButton: () => void = () => {};
+  onBookmarkButton: () => void = () => {};
+  onKeywordChange: (value: string) => void = () => {};
+  onRefresh: () => void = () => {};
+  onClear: () => void = () => {};
+  @StorageProp(LANGUAGE_REVISION_KEY) languageRevision: number = 0;
+  @StorageProp(THEME_REVISION_KEY) themeRevision: number = 0;
+  @StorageProp(MAIN_CONTENT_WIDTH_VP_KEY) contentWidth: number = 360;
+
+  private barBodyHeight(): number {
+    return this.toolbarHeight > 0 ? this.toolbarHeight : uiAdaptiveToolbarHeight(this.contentWidth);
+  }
+
+  private actionSize(): number {
+    return this.contentWidth >= 600 ? 44 : 42;
+  }
+
+  private totalBarHeight(): number {
+    return this.statusBarHeight + this.barBodyHeight();
+  }
+
+  private barVisible(): boolean {
+    return this.translateY > -this.totalBarHeight();
+  }
+
+  private backdropHeight(): number {
+    const fadeHeight = uiTitleBarFadeHeight();
+    const minimumHeight = this.statusBarHeight + fadeHeight;
+    return Math.max(minimumHeight,
+      Math.min(this.totalBarHeight() + fadeHeight, this.totalBarHeight() + this.translateY + fadeHeight));
+  }
+
+  aboutToAppear(): void {
+    this.refreshSignedIn();
+    // Cookie 是异步从磁盘读的，首帧时 hasCookies() 还是 false，
+    // 头像会先显示成游客的 "?"；读完之后补两次刷新。
+    setTimeout(() => {
+      this.refreshSignedIn();
+    }, 600);
+    setTimeout(() => {
+      this.refreshSignedIn();
+    }, 2000);
+  }
+
+  private refreshSignedIn(): void {
+    this.signedIn = ehCookieStore.hasCookies();
+  }
+
+  build() {
+    Stack({ alignContent: Alignment.TopStart }) {
+      if (this.showBackdrop) {
+        EhTitleBarBackdrop({ barBackdropHeight: this.backdropHeight() })
+      }
+
+      Column() {
+        // Status bar spacer (colour-matched)
+        Column()
+          .height(this.statusBarHeight)
+          .width('100%')
+          .backgroundColor(Color.Transparent)
+
+        // Main bar row
+        Row() {
+        // Hamburger / back button
+        Button({ type: ButtonType.Circle, stateEffect: true }) {
+          if (this.showBackButton) {
+            SymbolGlyph($r('sys.symbol.chevron_left'))
+              .fontSize(22)
+              .fontColor([navigationTitleText()])
+          } else {
+            // 头像：去掉抽屉后，登录状态还在这里可见。
+            Text(this.signedIn ? 'EH' : '?')
+              .fontSize(this.signedIn ? 13 : 16)
+              .fontWeight(FontWeight.Bold)
+              .fontColor(navigationTitleText())
+          }
+        }
+        .width(this.actionSize())
+        .height(this.actionSize())
+        .backgroundColor(uiMaterialBackground(navigationActionBackground(themeOnPrimaryActionBackground())))
+        .flexShrink(0)
+        .border({ width: 1, color: uiButtonHighlightBorderColor() })
+        .backgroundEffect(uiTransparentButtonBackgroundEffect())
+        .systemMaterial(uiButtonMaterial())
+        .onClick(() => {
+          if (this.showBackButton) {
+            this.onBack();
+          } else {
+            this.onMenu();
+          }
+        })
+
+        if (this.searchMode) {
+          // Search input
+          Stack({ alignContent: Alignment.BottomStart }) {
+            TextInput({
+              text: this.keyword,
+              placeholder: this.searchPlaceholder.length > 0 ? uiText(this.searchPlaceholder) :
+                (this.title.length === 0 ? uiText('Search galleries') : uiText(this.title))
+            })
+              .height(uiSearchFieldHeight())
+              .width('100%')
+              .backgroundColor(themeFieldBackground())
+              .padding({ left: 16, right: 42, top: 0, bottom: 0 })
+              .caretColor(themeAccentTextColor())
+              .fontColor(themePrimaryText())
+              .lineHeight(22)
+              .fontSize(16)
+              .placeholderColor(themeSecondaryText())
+              .borderRadius(uiPillRadius(uiSearchFieldHeight() / 2))
+              .onFocus(() => { this.onSearchFocus(); })
+              .onChange((v: string) => { this.onKeywordChange(v); })
+              .onSubmit(() => { this.onSearch(); })
+
+            if (this.filterActive) {
+              Text(uiText('Filter'))
+                .fontSize(9)
+                .fontColor(navigationTitleText())
+                .backgroundColor(navigationActionBackground(themeOnPrimaryActionStrongBackground()))
+                .padding({ left: 5, right: 5, top: 1, bottom: 1 })
+                .borderRadius(uiControlRadius(3))
+                .margin({ left: 10, bottom: 5 })
+            }
+          }
+          .height(uiSearchFieldHeight())
+          .layoutWeight(1)
+          .margin({ left: 10 })
+
+          // Search confirm
+          Button({ type: ButtonType.Circle, stateEffect: true }) {
+            SymbolGlyph(this.searchShowsAdvancedButton ? $r('sys.symbol.plus') : $r('sys.symbol.magnifyingglass'))
+              .fontSize(this.searchShowsAdvancedButton ? 22 : 20)
+              .fontColor([navigationTitleText()])
+          }
+          .width(this.actionSize())
+          .height(this.actionSize())
+          .backgroundColor(uiMaterialBackground(navigationActionBackground(this.searchShowsAdvancedButton && this.filterActive ?
+            themeOnPrimaryActionStrongBackground() : themeOnPrimaryActionBackground())))
+          .margin({ left: 8 })
+          .flexShrink(0)
+          .border({ width: 1, color: uiButtonHighlightBorderColor() })
+          .backgroundEffect(uiTransparentButtonBackgroundEffect())
+          .systemMaterial(uiButtonMaterial())
+          .onClick(() => {
+            if (this.searchShowsAdvancedButton) {
+              this.onAdvanced();
+            } else {
+              this.onSearch();
+            }
+          })
+
+        } else {
+          // Title text
+          Column() {
+            Text(uiText(this.title))
+              .fontSize(uiAdaptiveTitleSize(this.contentWidth))
+              .fontWeight(FontWeight.Medium)
+              .fontColor(navigationTitleText())
+              .maxLines(1)
+              .textOverflow({ overflow: TextOverflow.Ellipsis })
+
+            if (this.subtitle.length > 0) {
+              Text(uiText(this.subtitle))
+                .fontSize(12)
+                .fontColor(navigationSecondaryText())
+                .maxLines(1)
+                .textOverflow({ overflow: TextOverflow.Ellipsis })
+                .margin({ top: 1 })
+            }
+          }
+          .alignItems(HorizontalAlign.Start)
+          .layoutWeight(1)
+          .margin({ left: 12 })
+
+          if (this.showRefreshButton) {
+            Button({ type: ButtonType.Circle, stateEffect: true }) {
+              SymbolGlyph($r('sys.symbol.play_arrow_triangle_2_circlepath'))
+                .fontSize(20)
+                .fontColor([navigationTitleText()])
+            }
+            .width(this.actionSize())
+            .height(this.actionSize())
+            .backgroundColor(uiMaterialBackground(navigationActionBackground(themeOnPrimaryActionBackground())))
+            .margin({ left: 6 })
+            .flexShrink(0)
+            .border({ width: 1, color: uiButtonHighlightBorderColor() })
+            .backgroundEffect(uiTransparentButtonBackgroundEffect())
+            .systemMaterial(uiButtonMaterial())
+            .onClick(() => { this.onRefresh(); })
+          }
+
+          if (this.showFavoriteButton) {
+            Button({ type: ButtonType.Circle, stateEffect: true }) {
+              SymbolGlyph($r('sys.symbol.folder'))
+                .fontSize(20)
+                .fontColor([navigationTitleText()])
+            }
+            .width(this.actionSize())
+            .height(this.actionSize())
+            .backgroundColor(uiMaterialBackground(navigationActionBackground(themeOnPrimaryActionBackground())))
+            .margin({ left: 6 })
+            .flexShrink(0)
+            .border({ width: 1, color: uiButtonHighlightBorderColor() })
+            .backgroundEffect(uiTransparentButtonBackgroundEffect())
+            .systemMaterial(uiButtonMaterial())
+            .onClick(() => { this.onFavoriteButton(); })
+          }
+
+          if (this.showBookmarkButton) {
+            Button({ type: ButtonType.Circle, stateEffect: true }) {
+              SymbolGlyph($r('sys.symbol.bookmark'))
+                .fontSize(20)
+                .fontColor([navigationTitleText()])
+            }
+            .width(this.actionSize())
+            .height(this.actionSize())
+            .backgroundColor(uiMaterialBackground(navigationActionBackground(themeOnPrimaryActionBackground())))
+            .margin({ left: 6 })
+            .flexShrink(0)
+            .border({ width: 1, color: uiButtonHighlightBorderColor() })
+            .backgroundEffect(uiTransparentButtonBackgroundEffect())
+            .systemMaterial(uiButtonMaterial())
+            .onClick(() => { this.onBookmarkButton(); })
+          }
+
+          if (this.showSearchButton) {
+            Button({ type: ButtonType.Circle, stateEffect: true }) {
+              SymbolGlyph($r('sys.symbol.magnifyingglass'))
+                .fontSize(20)
+                .fontColor([navigationTitleText()])
+            }
+            .width(this.actionSize())
+            .height(this.actionSize())
+            .backgroundColor(uiMaterialBackground(navigationActionBackground(themeOnPrimaryActionBackground())))
+            .margin({ left: 6 })
+            .flexShrink(0)
+            .border({ width: 1, color: uiButtonHighlightBorderColor() })
+            .backgroundEffect(uiTransparentButtonBackgroundEffect())
+            .systemMaterial(uiButtonMaterial())
+            .onClick(() => { this.onSearch(); })
+          }
+
+          // Optional clear button
+          if (this.showClear) {
+            Button({ type: ButtonType.Circle, stateEffect: true }) {
+              SymbolGlyph($r('sys.symbol.trash'))
+                .fontSize(19)
+                .fontColor([navigationTitleText()])
+            }
+            .width(this.actionSize())
+            .height(this.actionSize())
+            .enabled(this.canClear)
+            .backgroundColor(uiMaterialBackground(navigationActionBackground(this.canClear ? themeOnPrimaryDangerBackground() :
+              themeOnPrimaryActionDisabledBackground())))
+            .margin({ left: 6 })
+            .flexShrink(0)
+            .border({ width: 1, color: uiButtonHighlightBorderColor() })
+            .backgroundEffect(uiTransparentButtonBackgroundEffect())
+            .systemMaterial(uiButtonMaterial())
+            .onClick(() => { this.onClear(); })
+          }
+        }
+        }
+        .width('100%')
+        .height(this.barBodyHeight())
+        .padding({ left: 12, right: 12 })
+        .alignItems(VerticalAlign.Center)
+        .backgroundColor(Color.Transparent)
+      }
+      .width('100%')
+      .translate({ y: this.translateY })
+      .visibility(this.barVisible() ? Visibility.Visible : Visibility.Hidden)
+    }
+    .width('100%')
+    .height(this.backdropHeight())
+    .animation({ duration: 200, curve: Curve.EaseOut })
+    .backgroundColor(Color.Transparent)
+    .hitTestBehavior(HitTestMode.Transparent)
+    .zIndex(10)
+  }
+}
+
+// ===================================================================
+// EhSubNavBar  -- back-arrow top bar for sub-pages (detail, settings)
+// ===================================================================
+@Component
+export struct EhSubNavBar {
+  @Prop statusBarHeight: number = 0;
+  @Prop title: string = '';
+  @Prop showAction: boolean = false;
+  @Prop translateTitle: boolean = false;
+  @Prop actionChecked: boolean = false;
+  @Prop actionIcon: Resource = $r('sys.symbol.share');
+  @Prop translateY: number = 0;
+  @Prop showBottomFade: boolean = true;
+  @Prop showBackdrop: boolean = true;
+  onBack: () => void = () => {};
+  onAction: () => void = () => {};
+  @StorageProp(LANGUAGE_REVISION_KEY) languageRevision: number = 0;
+  @StorageProp(THEME_REVISION_KEY) themeRevision: number = 0;
+  @StorageProp(MAIN_CONTENT_WIDTH_VP_KEY) contentWidth: number = 360;
+
+  private barBodyHeight(): number {
+    return uiAdaptiveToolbarHeight(this.contentWidth);
+  }
+
+  private actionSize(): number {
+    return this.contentWidth >= 600 ? 44 : 42;
+  }
+
+  private totalBarHeight(): number {
+    return this.statusBarHeight + this.barBodyHeight();
+  }
+
+  private barVisible(): boolean {
+    return this.translateY > -this.totalBarHeight();
+  }
+
+  private backdropHeight(): number {
+    const fadeHeight = this.showBottomFade ? uiTitleBarFadeHeight() : 0;
+    const minimumHeight = this.statusBarHeight + fadeHeight;
+    return Math.max(minimumHeight,
+      Math.min(this.totalBarHeight() + fadeHeight, this.totalBarHeight() + this.translateY + fadeHeight));
+  }
+
+  build() {
+    Stack({ alignContent: Alignment.TopStart }) {
+      if (this.showBackdrop) {
+        EhTitleBarBackdrop({ barBackdropHeight: this.backdropHeight() })
+      }
+
+      Column() {
+        Column()
+          .height(this.statusBarHeight)
+          .width('100%')
+          .backgroundColor(Color.Transparent)
+
+        Row() {
+        Button({ type: ButtonType.Circle, stateEffect: true }) {
+          SymbolGlyph($r('sys.symbol.chevron_left'))
+            .fontSize(22)
+            .fontColor([navigationTitleText()])
+        }
+        .width(this.actionSize())
+        .height(this.actionSize())
+        .backgroundColor(uiMaterialBackground(navigationActionBackground(themeOnPrimaryActionBackground())))
+        .flexShrink(0)
+        .border({ width: 1, color: uiButtonHighlightBorderColor() })
+        .backgroundEffect(uiTransparentButtonBackgroundEffect())
+        .systemMaterial(uiButtonMaterial())
+        .onClick(() => { this.onBack(); })
+
+        TranslationText({
+          sourceText: this.translateTitle ? this.title : uiText(this.title),
+          translationEnabled: this.translateTitle,
+          fontSizeValue: uiAdaptiveTitleSize(this.contentWidth),
+          fontWeightValue: FontWeight.Medium,
+          fontColorValue: navigationTitleText(),
+          lineHeightValue: 24,
+          maxLinesValue: 1
+        })
+          .layoutWeight(1)
+          .margin({ left: 12 })
+
+        if (this.showAction) {
+          Button({ type: ButtonType.Circle, stateEffect: true }) {
+            SymbolGlyph(this.actionIcon)
+              .fontSize(22)
+              .fontColor([navigationTitleText()])
+          }
+          .width(this.actionSize())
+          .height(this.actionSize())
+          .backgroundColor(uiMaterialBackground(navigationActionBackground(this.actionChecked ? themeOnPrimaryActionStrongBackground() :
+            themeOnPrimaryActionBackground())))
+          .margin({ left: 8 })
+          .flexShrink(0)
+          .border({ width: 1, color: uiButtonHighlightBorderColor() })
+          .backgroundEffect(uiTransparentButtonBackgroundEffect())
+          .systemMaterial(uiButtonMaterial())
+          .onClick(() => {
+            this.onAction();
+          })
+        }
+        }
+        .width('100%')
+        .height(this.barBodyHeight())
+        .padding({ left: 12, right: 16 })
+        .alignItems(VerticalAlign.Center)
+        .backgroundColor(Color.Transparent)
+      }
+      .width('100%')
+      .translate({ y: this.translateY })
+      .visibility(this.barVisible() ? Visibility.Visible : Visibility.Hidden)
+    }
+    .width('100%')
+    .height(this.backdropHeight())
+    .animation({ duration: 200, curve: Curve.EaseOut })
+    .backgroundColor(Color.Transparent)
+    .zIndex(10)
+  }
+}
+
+// ===================================================================
+// Legacy shims -- kept so older code that still imports these still
+// compiles until we migrate each caller
+// ===================================================================
+@Component
+export struct AppToolbar {
+  title: string = '';
+  subtitle: string = '';
+  @Prop translateY: number = 0;
+  onMenu: () => void = () => {};
+  @StorageProp(STATUS_BAR_HEIGHT_KEY) statusBarHeight: number = 0;
+  @StorageProp(LANGUAGE_REVISION_KEY) languageRevision: number = 0;
+
+  private statusBarVp(): number {
+    return this.getUIContext().px2vp(this.statusBarHeight);
+  }
+
+  build() {
+    EhNavBar({
+      statusBarHeight: this.statusBarVp(),
+      title: this.title,
+      subtitle: this.subtitle,
+      translateY: this.translateY,
+      showRefreshButton: false,
+      onMenu: this.onMenu,
+      onRefresh: () => {}
+    })
+  }
+}
+
+@Component
+export struct AppSubToolbar {
+  @Prop title: string = '';
+  @Prop showAction: boolean = false;
+  @Prop translateTitle: boolean = false;
+  @Prop actionChecked: boolean = false;
+  @Prop actionIcon: Resource = $r('sys.symbol.share');
+  @Prop translateY: number = 0;
+  @Prop showBottomFade: boolean = true;
+  onBack: () => void = () => {};
+  onAction: () => void = () => {};
+  @StorageProp(STATUS_BAR_HEIGHT_KEY) statusBarHeight: number = 0;
+  @StorageProp(LANGUAGE_REVISION_KEY) languageRevision: number = 0;
+
+  private statusBarVp(): number {
+    return this.getUIContext().px2vp(this.statusBarHeight);
+  }
+
+  build() {
+    EhSubNavBar({
+      statusBarHeight: this.statusBarVp(),
+      title: this.title,
+      showAction: this.showAction,
+      translateTitle: this.translateTitle,
+      actionChecked: this.actionChecked,
+      actionIcon: this.actionIcon,
+      translateY: this.translateY,
+      showBottomFade: this.showBottomFade,
+      onBack: this.onBack,
+      onAction: this.onAction
+    })
+  }
+}
+
+@Component
+export struct DrawerPanel {
+  @Prop activeRoute: GalleryRoute = GalleryRoute.Home;
+  onSelect: (route: GalleryRoute) => void = () => {};
+  @StorageProp(LANGUAGE_REVISION_KEY) languageRevision: number = 0;
+
+  build() {
+    EhDrawer({
+      activeRoute: this.activeRoute,
+      statusBarHeight: 0,
+      onSelect: this.onSelect
+    })
+  }
+}
+
+// ===================================================================
+// FloatingToolbar / FloatingToolbarHost -- used by History & TopList scenes
+// These provide scroll-hiding toolbar overlay behavior
+// ===================================================================
+@Component
+export struct FloatingToolbar {
+  @Prop visible: boolean = true;
+  @Prop barHeight: number = 62;
+  @Prop offsetY: number = 0;
+  @BuilderParam content: () => void = this.EmptyContent;
+
+  @Builder
+  private EmptyContent() {}
+
+  private toolbarOffset(): number {
+    if (this.offsetY !== 0) {
+      return this.offsetY;
+    }
+    return this.visible ? 0 : -this.barHeight;
+  }
+
+  private toolbarVisible(): boolean {
+    return this.toolbarOffset() > -this.barHeight;
+  }
+
+  build() {
+    Column() {
+      this.content()
+    }
+    .width('100%')
+    .translate({ y: this.toolbarOffset() })
+    .opacity(1)
+    .visibility(this.toolbarVisible() ? Visibility.Visible : Visibility.Hidden)
+    .animation({ duration: 200, curve: Curve.EaseOut })
+    .hitTestBehavior(HitTestMode.Transparent)
+    .zIndex(10)
+  }
+}
+
+@Component
+export struct FloatingToolbarHost {
+  @Prop kind: string = 'title';
+  @Prop title: string = '';
+  @Prop keyword: string = '';
+  @Prop searchPlaceholder: string = '';
+  @Prop filterActive: boolean = false;
+  @Prop requestUrl: string = '';
+  @Prop showClear: boolean = false;
+  @Prop canClear: boolean = false;
+  @Prop showSearchButton: boolean = false;
+  @Prop showRefreshButton: boolean = true;
+  @Prop showBackButton: boolean = false;
+  @Prop searchShowsAdvancedButton: boolean = false;
+  @Prop showFavoriteButton: boolean = false;
+  @Prop toolbarOffsetY: number = 0;
+  @Prop toolbarHeight: number = 62;
+  @Prop retainCollapsedBackdrop: boolean = false;
+  @Prop showBackdrop: boolean = true;
+  @BuilderParam content: () => void = this.EmptyContent;
+  onKeywordChange: (value: string) => void = () => {};
+  onMenu: () => void = () => {};
+  onBack: () => void = () => {};
+  onSearch: () => void = () => {};
+  onSearchFocus: () => void = () => {};
+  onAdvanced: () => void = () => {};
+  onFavoriteButton: () => void = () => {};
+  onRefresh: () => void = () => {};
+  onClear: () => void = () => {};
+  @StorageProp(STATUS_BAR_HEIGHT_KEY) statusBarHeightPx: number = 0;
+  @StorageProp(MAIN_CONTENT_WIDTH_VP_KEY) contentWidth: number = 360;
+
+  private statusBarVp(): number {
+    return this.getUIContext().px2vp(this.statusBarHeightPx);
+  }
+
+  private totalToolbarHeight(): number {
+    return this.statusBarVp() + this.toolbarHeight;
+  }
+
+  @Builder
+  private EmptyContent() {}
+
+  @Builder
+  private navigationBar(translateY: number) {
+    EhNavBar({
+      statusBarHeight: this.statusBarVp(),
+      toolbarHeight: this.toolbarHeight,
+      title: this.title,
+      searchMode: this.kind === 'search',
+      keyword: this.keyword,
+      searchPlaceholder: this.searchPlaceholder,
+      filterActive: this.filterActive,
+      showClear: this.showClear,
+      canClear: this.canClear,
+      showSearchButton: this.showSearchButton,
+      showRefreshButton: this.showRefreshButton,
+      showBackButton: this.showBackButton,
+      searchShowsAdvancedButton: this.searchShowsAdvancedButton,
+      showFavoriteButton: this.showFavoriteButton,
+      showBackdrop: this.showBackdrop,
+      translateY: translateY,
+      onKeywordChange: this.onKeywordChange,
+      onSearchFocus: this.onSearchFocus,
+      onAdvanced: this.onAdvanced,
+      onFavoriteButton: this.onFavoriteButton,
+      onMenu: this.onMenu,
+      onBack: this.onBack,
+      onSearch: this.onSearch,
+      onRefresh: this.onRefresh,
+      onClear: this.onClear
+    })
+  }
+
+  build() {
+    Stack({ alignContent: Alignment.TopStart }) {
+      this.content()
+      if (this.retainCollapsedBackdrop) {
+        this.navigationBar(this.toolbarOffsetY)
+      } else {
+        FloatingToolbar({ offsetY: this.toolbarOffsetY, barHeight: this.totalToolbarHeight() }) {
+          this.navigationBar(0)
+        }
+      }
+    }
+    .width('100%')
+    .height('100%')
+  }
+}
+
+// Legacy search bar used by FloatingToolbarHost
+@Component
+struct LegacySearchBar {
+  @Prop keyword: string = '';
+  @Prop title: string = '';
+  @Prop filterActive: boolean = false;
+  onKeywordChange: (value: string) => void = () => {};
+  onMenu: () => void = () => {};
+  onSearch: () => void = () => {};
+  @StorageProp(LANGUAGE_REVISION_KEY) languageRevision: number = 0;
+
+  build() {
+    Row() {
+      Button({ type: ButtonType.Circle, stateEffect: true }) {
+        SymbolGlyph($r('sys.symbol.open_sidebar'))
+          .fontSize(22).fontColor([navigationTitleText()])
+      }
+      .width(40).height(40)
+      .backgroundColor(uiMaterialBackground(navigationActionBackground(themeOnPrimaryActionBackground())))
+      .flexShrink(0)
+      .border({ width: 1, color: uiButtonHighlightBorderColor() })
+      .backgroundEffect(uiTransparentButtonBackgroundEffect())
+      .systemMaterial(uiButtonMaterial())
+      .onClick(() => { this.onMenu(); })
+
+      TextInput({ text: this.keyword, placeholder: uiText(this.title.length > 0 ? this.title : 'Search') })
+        .height(uiSearchFieldHeight())
+        .layoutWeight(1)
+        .backgroundColor(themeFieldBackground())
+        .margin({ left: 10 })
+        .padding({ left: 14, right: 14, top: 0, bottom: 0 })
+        .placeholderColor(themeSecondaryText())
+        .caretColor(themeAccentTextColor())
+        .fontColor(themePrimaryText())
+        .lineHeight(22)
+        .fontSize(16)
+        .borderRadius(uiPillRadius(uiSearchFieldHeight() / 2))
+        .onChange((v: string) => { this.onKeywordChange(v); })
+
+      Button({ type: ButtonType.Circle, stateEffect: true }) {
+        SymbolGlyph($r('sys.symbol.magnifyingglass'))
+          .fontSize(20).fontColor([navigationTitleText()])
+      }
+      .width(40).height(40)
+      .backgroundColor(uiMaterialBackground(navigationActionBackground(themeOnPrimaryActionBackground())))
+      .margin({ left: 8 })
+      .flexShrink(0)
+      .border({ width: 1, color: uiButtonHighlightBorderColor() })
+      .backgroundEffect(uiTransparentButtonBackgroundEffect())
+      .systemMaterial(uiButtonMaterial())
+      .onClick(() => { this.onSearch(); })
+    }
+    .width('100%')
+    .height(62)
+    .padding({ left: 12, right: 12 })
+    .alignItems(VerticalAlign.Center)
+    .backgroundColor(navigationBarBackground())
+    .backgroundEffect(uiTitleBarBackgroundEffect())
+  }
+}
+
+// Legacy action bar used by FloatingToolbarHost
+@Component
+struct LegacyActionBar {
+  @Prop title: string = '';
+  @Prop showClear: boolean = false;
+  @Prop canClear: boolean = false;
+  onMenu: () => void = () => {};
+  onRefresh: () => void = () => {};
+  onClear: () => void = () => {};
+  @StorageProp(LANGUAGE_REVISION_KEY) languageRevision: number = 0;
+
+  build() {
+    Row() {
+      Button({ type: ButtonType.Circle, stateEffect: true }) {
+        SymbolGlyph($r('sys.symbol.open_sidebar'))
+          .fontSize(22).fontColor([navigationTitleText()])
+      }
+      .width(40).height(40)
+      .backgroundColor(uiMaterialBackground(navigationActionBackground(themeOnPrimaryActionBackground())))
+      .flexShrink(0)
+      .border({ width: 1, color: uiButtonHighlightBorderColor() })
+      .backgroundEffect(uiTransparentButtonBackgroundEffect())
+      .systemMaterial(uiButtonMaterial())
+      .onClick(() => { this.onMenu(); })
+
+      Text(uiText(this.title))
+        .fontSize(18)
+        .fontWeight(FontWeight.Medium)
+        .fontColor(navigationTitleText())
+        .maxLines(1)
+        .textOverflow({ overflow: TextOverflow.Ellipsis })
+        .layoutWeight(1)
+        .margin({ left: 12 })
+
+      Button({ type: ButtonType.Circle, stateEffect: true }) {
+        SymbolGlyph($r('sys.symbol.play_arrow_triangle_2_circlepath'))
+          .fontSize(20).fontColor([navigationTitleText()])
+      }
+      .width(40).height(40)
+      .backgroundColor(uiMaterialBackground(navigationActionBackground(themeOnPrimaryActionBackground())))
+      .margin({ left: 6 })
+      .flexShrink(0)
+      .border({ width: 1, color: uiButtonHighlightBorderColor() })
+      .backgroundEffect(uiTransparentButtonBackgroundEffect())
+      .systemMaterial(uiButtonMaterial())
+      .onClick(() => { this.onRefresh(); })
+
+      if (this.showClear) {
+        Button({ type: ButtonType.Circle, stateEffect: true }) {
+          SymbolGlyph($r('sys.symbol.trash'))
+            .fontSize(19).fontColor([navigationTitleText()])
+        }
+        .width(40).height(40)
+        .enabled(this.canClear)
+        .backgroundColor(uiMaterialBackground(navigationActionBackground(this.canClear ? themeOnPrimaryDangerBackground() :
+          themeOnPrimaryActionDisabledBackground())))
+        .margin({ left: 6 })
+        .flexShrink(0)
+        .border({ width: 1, color: uiButtonHighlightBorderColor() })
+        .backgroundEffect(uiTransparentButtonBackgroundEffect())
+        .systemMaterial(uiButtonMaterial())
+        .onClick(() => { this.onClear(); })
+      }
+    }
+    .width('100%')
+    .height(62)
+    .padding({ left: 12, right: 12 })
+    .alignItems(VerticalAlign.Center)
+    .backgroundColor(navigationBarBackground())
+    .backgroundEffect(uiTitleBarBackgroundEffect())
+  }
+}
+
+// Legacy aliases kept for source compatibility
+@Component
+export struct GallerySearchToolbar {
+  @Prop keyword: string = '';
+  @Prop title: string = '';
+  @Prop filterActive: boolean = false;
+  @Prop requestUrl: string = '';
+  onKeywordChange: (value: string) => void = () => {};
+  onMenu: () => void = () => {};
+  onSearch: () => void = () => {};
+
+  build() {
+    LegacySearchBar({
+      keyword: this.keyword,
+      title: this.title,
+      filterActive: this.filterActive,
+      onKeywordChange: this.onKeywordChange,
+      onMenu: this.onMenu,
+      onSearch: this.onSearch
+    })
+  }
+}
+
+@Component
+export struct ActionTitleToolbar {
+  @Prop title: string = '';
+  @Prop requestUrl: string = '';
+  @Prop showClear: boolean = false;
+  @Prop canClear: boolean = false;
+  onMenu: () => void = () => {};
+  onRefresh: () => void = () => {};
+  onClear: () => void = () => {};
+
+  build() {
+    LegacyActionBar({
+      title: this.title,
+      showClear: this.showClear,
+      canClear: this.canClear,
+      onMenu: this.onMenu,
+      onRefresh: this.onRefresh,
+      onClear: this.onClear
+    })
+  }
+}
+
+@Component
+export struct AppTopBar {
+  title: string = '';
+  subtitle: string = '';
+  symbol: Resource = $r('sys.symbol.open_sidebar');
+  onAction: () => void = () => {};
+  @StorageProp(LANGUAGE_REVISION_KEY) languageRevision: number = 0;
+
+  build() {
+    Row() {
+      Button({ type: ButtonType.Circle, stateEffect: true }) {
+        SymbolGlyph(this.symbol)
+          .fontSize(22)
+          .fontColor([navigationTitleText()])
+      }
+      .width(40).height(40)
+      .backgroundColor(uiMaterialBackground(navigationActionBackground(themeOnPrimaryActionBackground())))
+      .border({ width: 1, color: uiButtonHighlightBorderColor() })
+      .backgroundEffect(uiTransparentButtonBackgroundEffect())
+      .systemMaterial(uiButtonMaterial())
+      .onClick(() => { this.onAction(); })
+
+      Column() {
+        Text(uiText(this.title))
+          .fontSize(18)
+          .fontWeight(FontWeight.Medium)
+          .fontColor(navigationTitleText())
+          .maxLines(1)
+          .textOverflow({ overflow: TextOverflow.Ellipsis })
+        if (this.subtitle.length > 0) {
+          Text(uiText(this.subtitle))
+            .fontSize(12)
+            .fontColor(navigationSecondaryText())
+            .maxLines(1)
+            .textOverflow({ overflow: TextOverflow.Ellipsis })
+            .margin({ top: 1 })
+        }
+      }
+      .alignItems(HorizontalAlign.Start)
+      .layoutWeight(1)
+      .margin({ left: 12 })
+    }
+    .width('100%')
+    .height(62)
+    .padding({ left: 12, right: 16 })
+    .alignItems(VerticalAlign.Center)
+    .backgroundColor(navigationBarBackground())
+    .backgroundEffect(uiTitleBarBackgroundEffect())
+  }
+}

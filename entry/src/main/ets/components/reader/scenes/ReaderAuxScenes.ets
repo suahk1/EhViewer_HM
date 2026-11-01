@@ -1,0 +1,289 @@
+import { GalleryComment } from '../../../model/GalleryModels';
+import { KeyboardAvoidMode } from '@kit.ArkUI';
+import { beginAppKeyboardAvoidance, restoreAppKeyboardAvoidance } from '../../../shared/KeyboardAvoidance';
+import { CommentComposer } from '../../detail/CommentComposer';
+import {
+  TRANSLATION_ENABLED_KEY,
+  ehTranslationService,
+  translationPriorityForIndex
+} from '../../../services/EhTranslationService';
+import { TRANSLATION_BUTTONS_VISIBLE_KEY } from '../../../services/AppSettingsStore';
+import { nextFloatingToolbarOffset, uiText } from '../../../shared/AppRuntime';
+import {
+  themeDividerColor,
+  themePageBackground,
+  themePrimaryText,
+  themeSecondaryText,
+  themeSurface
+} from '../../../shared/AppPalette';
+import { EhSubNavBar } from '../../NavigationComponents';
+import { MAIN_CONTENT_WIDTH_VP_KEY } from '../../../services/WindowChromeController';
+import { BOTTOM_AVOID_HEIGHT_KEY } from '../../../shared/AppRuntime';
+import { APP_CHROME_HIDDEN_KEY, APP_OVERLAY_HIDDEN_KEY } from '../../../services/AppChromeSignal';
+import { APP_DOCK_BAR_HEIGHT, appDockBottomGap } from '../../FloatingDock';
+import { uiAdaptiveToolbarHeight } from '../../../shared/AppSurfaceStyle';
+import { GalleryCommentRow } from '../../detail/CommentComponents';
+import { TranslationText } from '../../TranslationComponents';
+import {
+  COMMENT_BLACKLIST_REVISION_KEY,
+  ehCommentBlacklistStore
+} from '../../../services/EhCommentBlacklistStore';
+
+@Component
+export struct CommentsScene {
+  @StorageProp(COMMENT_BLACKLIST_REVISION_KEY) @Watch('refreshVisibleComments') blacklistRevision: number = 0;
+  @Prop renderVersion: number = 0;
+  @Prop @Watch('refreshVisibleComments') comments: GalleryComment[] = [];
+  @Prop galleryTitle: string = '';
+  @Prop commentDraft: string = '';
+  @Prop commentPosting: boolean = false;
+  @Prop commentPostStatus: string = '';
+  onCommentDraftChange: (value: string) => void = (_value: string) => {};
+  onPostComment: () => void = () => {};
+  onBack: () => void = () => {};
+  onVoteComment: (comment: GalleryComment, vote: number) => void = (_comment: GalleryComment, _vote: number) => {};
+  onOpenGalleryLink: (url: string) => void = (_url: string) => {};
+  @StorageProp('statusBarHeight') statusBarHeightPx: number = 0;
+  @StorageLink(TRANSLATION_ENABLED_KEY) translationEnabled: boolean = false;
+  @StorageProp(TRANSLATION_BUTTONS_VISIBLE_KEY) translationButtonsVisible: boolean = true;
+  @State translationVisibleStart: number = -1;
+  @State translationVisibleEnd: number = -1;
+  @State visibleCommentItems: GalleryComment[] = [];
+  @State toolbarOffsetY: number = 0;
+  @StorageProp(MAIN_CONTENT_WIDTH_VP_KEY) contentWidth: number = 360;
+  @StorageProp(BOTTOM_AVOID_HEIGHT_KEY) bottomAvoidHeight: number = 0;
+  @StorageProp(APP_CHROME_HIDDEN_KEY) chromeHidden: boolean = false;
+  @StorageProp(APP_OVERLAY_HIDDEN_KEY) overlayHidden: boolean = false;
+  private commentsScroller: Scroller = new Scroller();
+  private toolbarRestoring: boolean = false;
+  private previousKeyboardAvoidMode: KeyboardAvoidMode | null = null;
+
+  aboutToAppear(): void {
+    this.refreshVisibleComments();
+    // Comments contains a List and an auto-growing TextArea; the shared
+    // caret-aware RESIZE mode keeps later line changes visible too.
+    this.previousKeyboardAvoidMode = beginAppKeyboardAvoidance(this.getUIContext());
+  }
+
+  aboutToDisappear(): void {
+    restoreAppKeyboardAvoidance(this.getUIContext(), this.previousKeyboardAvoidMode);
+    this.previousKeyboardAvoidMode = null;
+  }
+
+  private translationPriorityFor(index: number): number {
+    if (!this.translationEnabled) {
+      return 0;
+    }
+    return translationPriorityForIndex(index, this.translationVisibleStart, this.translationVisibleEnd);
+  }
+
+  private statusBarVp(): number {
+    return this.getUIContext().px2vp(this.statusBarHeightPx);
+  }
+
+  private totalBarHeight(): number {
+    return this.statusBarVp() + uiAdaptiveToolbarHeight(this.contentWidth);
+  }
+
+  private visibleBarHeight(): number {
+    return Math.max(0, Math.min(this.totalBarHeight(), this.totalBarHeight() + this.toolbarOffsetY));
+  }
+
+  private handleScrollFrame(scrollOffset: number): number {
+    const yOffset = Math.max(0, this.commentsScroller.currentOffset().yOffset);
+    if (yOffset <= 4) {
+      this.toolbarRestoring = false;
+      this.toolbarOffsetY = 0;
+      return scrollOffset;
+    }
+    if (scrollOffset > 0 && this.visibleBarHeight() > 0) {
+      const previousOffsetY = this.toolbarOffsetY;
+      this.toolbarRestoring = false;
+      this.toolbarOffsetY = nextFloatingToolbarOffset(this.toolbarOffsetY, scrollOffset, yOffset,
+        this.totalBarHeight());
+      return Math.max(0, scrollOffset - Math.max(0, previousOffsetY - this.toolbarOffsetY));
+    }
+    if (scrollOffset < 0 && this.toolbarOffsetY < 0) {
+      this.restoreToolbarOnReverseScroll();
+    }
+    return scrollOffset;
+  }
+
+  private restoreToolbarOnReverseScroll(): void {
+    if (this.toolbarRestoring) {
+      return;
+    }
+    this.toolbarRestoring = true;
+    this.getUIContext().animateTo({ duration: 260, curve: Curve.EaseOut }, () => {
+      this.toolbarOffsetY = 0;
+    });
+    setTimeout(() => {
+      this.toolbarRestoring = false;
+    }, 280);
+  }
+
+  private refreshVisibleComments(): void {
+    this.visibleCommentItems = ehCommentBlacklistStore.filterComments(this.comments);
+  }
+
+  @Builder
+  private commentsContent() {
+    Stack({ alignContent: Alignment.TopStart }) {
+      if (this.visibleCommentItems.length === 0) {
+        Column() {
+          PlaceholderScene({
+            title: uiText('Comments'),
+            detail: uiText('No comments')
+          })
+        }
+        .width('100%')
+        .height('100%')
+        .padding({ top: this.visibleBarHeight() })
+      } else {
+        List({ space: 0, scroller: this.commentsScroller }) {
+          ListItem() {
+            Row() {
+              TranslationText({
+                sourceText: this.galleryTitle,
+                translationEnabled: this.translationEnabled,
+                fontSizeValue: 12,
+                lineHeightValue: 18,
+                fontColorValue: themeSecondaryText(),
+                maxLinesValue: 1
+              })
+                .layoutWeight(1)
+              Text(this.visibleCommentItems.length.toString() + ' ' + uiText('total'))
+                .fontSize(12)
+                .fontColor(themeSecondaryText())
+                .margin({ left: 12 })
+            }
+            .width('100%')
+            .padding({ left: 16, right: 16, top: 8, bottom: 8 })
+            .backgroundColor(themeSurface())
+          }
+          .reuseId('comments-summary')
+
+          ForEach(this.visibleCommentItems, (comment: GalleryComment, index: number) => {
+            ListItem() {
+              GalleryCommentRow({
+                comment: this.visibleCommentItems[index],
+                maxLines: 1000,
+                compact: false,
+                openGalleryLinksInApp: true,
+                translateComment: this.translationEnabled,
+                translationPriority: this.translationPriorityFor(index),
+                onVoteComment: this.onVoteComment,
+                onOpenGalleryLink: this.onOpenGalleryLink,
+                onBlockUser: () => {
+                  this.refreshVisibleComments();
+                }
+              })
+            }
+            .reuseId('comment-row')
+          }, (comment: GalleryComment, index: number) => comment.id + ':' + index.toString())
+          ListItem() {
+            Divider()
+              .height(1)
+              .color(themeDividerColor())
+          }
+          .reuseId('comment-divider')
+        }
+        .divider({ strokeWidth: 1, color: themeDividerColor() })
+        .width('100%')
+        .height('100%')
+        .padding({ top: this.visibleBarHeight() })
+        .cachedCount(4)
+        .onScrollFrameBegin((offset: number, _state: ScrollState) => {
+          return { offsetRemain: this.handleScrollFrame(offset) };
+        })
+        .onScrollIndex((first: number, last: number) => {
+          this.translationVisibleStart = Math.max(0, first - 1);
+          this.translationVisibleEnd = Math.min(Math.max(0, last - 1), this.visibleCommentItems.length - 1);
+        })
+      }
+
+      EhSubNavBar({
+        statusBarHeight: this.statusBarVp(),
+        title: uiText('Comments'),
+        showAction: this.translationButtonsVisible,
+        actionChecked: this.translationEnabled,
+        actionIcon: $r('sys.symbol.translate'),
+        translateY: this.toolbarOffsetY,
+        onBack: this.onBack,
+        onAction: () => {
+          ehTranslationService.setEnabled(!this.translationEnabled);
+        }
+      })
+    }
+    .width('100%')
+    .height('100%')
+    .backgroundColor(themePageBackground())
+  }
+
+  // 评论层叠在主页之上，底坞（胶囊）仍然浮着；输入条贴屏幕底就会被胶囊盖掉半行。
+  // 底坞收起时不留白，否则底部空出一条。聚焦时 CommentComposer 自己会把底坞收走，
+  // 这里跟着归零，两者不会叠加出双份留白。
+  private dockReservedHeight(): number {
+    if (this.chromeHidden || this.overlayHidden) {
+      return 0;
+    }
+    return APP_DOCK_BAR_HEIGHT + appDockBottomGap(this.bottomAvoidHeight);
+  }
+
+  build() {
+    Column() {
+      Column() {
+        this.commentsContent()
+      }
+      .width('100%')
+      .layoutWeight(1)
+      .clip(true)
+      Column() {
+        CommentComposer({
+          draft: this.commentDraft,
+          posting: this.commentPosting,
+          status: this.commentPostStatus,
+          onDraftChange: this.onCommentDraftChange,
+          onPost: this.onPostComment
+        })
+      }
+      .width('100%')
+      .padding({ bottom: this.dockReservedHeight() })
+      .flexShrink(0)
+    }
+    .width('100%')
+    .height('100%')
+    .backgroundColor(themePageBackground())
+  }
+}
+
+
+
+@Component
+// Reader auxiliary scenes share this placeholder from several hosts.
+// eslint-disable-next-line @performance/avoid-overusing-custom-component-check
+export struct PlaceholderScene {
+  title: string = '';
+  detail: string = '';
+
+  build() {
+    Column() {
+      Text(this.title)
+        .fontSize(22)
+        .fontWeight(FontWeight.Bold)
+        .fontColor(themePrimaryText())
+      Text(this.detail)
+        .fontSize(14)
+        .fontColor(themeSecondaryText())
+        .lineHeight(22)
+        .textAlign(TextAlign.Center)
+        .margin({ top: 10 })
+        .width('80%')
+    }
+    .width('100%')
+    .height('100%')
+    .justifyContent(FlexAlign.Center)
+    .padding(24)
+    .backgroundColor(themePageBackground())
+  }
+}

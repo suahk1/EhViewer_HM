@@ -1,0 +1,1475 @@
+import { common } from '@kit.AbilityKit';
+import { fileIo as fs } from '@kit.CoreFileKit';
+import { http } from '@kit.NetworkKit';
+import { ehCookieStore } from './EhCookieStore';
+import { appLog } from './AppLogService';
+import {
+  acquireEhRequestAdmission,
+  applyEhNetworkOptions,
+  createEhRequestPlan,
+  currentDnsOverHttpsUrl,
+  EhRequestAdmission,
+  EhRequestPlan,
+  ensureEhHostRules,
+  isEhRouteReachableStatus,
+  recordEhRequestOutcome,
+  releaseEhRequestAdmission
+} from './NetworkConfig';
+import { appSettingsStore } from './AppSettingsStore';
+import { hathQualityStore } from './HathQualityStore';
+import { cancelHttpRequest, retireHttpRequest, acquireHttpRequest, markHttpRequestVolatile } from './HttpRequestLifecycle';
+import { ReaderImageDemand, readerImageRequestControl, READER_VISIBLE_IMAGE_PRIORITY,
+  READER_PREFETCH_IMAGE_PRIORITY } from './ReaderImageRequestControl';
+import { readerCancellableImageTransfer, supportsCancellableReaderTransfer } from './ReaderCancellableImageTransfer';
+import {
+  ensureDirectory,
+  exists,
+  isDirectory,
+  removeFileQuietly
+} from '../shared/FileUtils';
+
+interface PendingImageDownload {
+  url: string;
+  promise: Promise<string>;
+  listeners: ImageDownloadProgressCallback[];
+  lastProgress: ImageDownloadProgress;
+  priority: number;
+  demand?: ReaderImageDemand;
+}
+
+interface WaitingImageSlot {
+  key: string;
+  priority: number;
+  sequence: number;
+  background: boolean;
+  hath: boolean;
+  resolve: (slot: AcquiredImageSlot) => void;
+  reject: (error: Error) => void;
+}
+
+interface AcquiredImageSlot {
+  background: boolean;
+  hath: boolean;
+}
+
+interface ActiveImageRequest {
+  request: http.HttpRequest;
+  priority: number;
+  cancelRequested: boolean;
+  demand?: ReaderImageDemand;
+}
+
+const PENDING_IMAGE_DOWNLOADS: PendingImageDownload[] = [];
+const WAITING_IMAGE_SLOTS: WaitingImageSlot[] = [];
+const ACTIVE_IMAGE_REQUESTS: ActiveImageRequest[] = [];
+const ACTIVE_IMAGE_TEMP_PATHS: string[] = [];
+const DEFAULT_IMAGE_CACHE_BYTES: number = 160 * 1024 * 1024;
+const IMAGE_RETRY_DELAYS_MS: number[] = [300, 900, 1800, 3200];
+const IMAGE_CONNECT_TIMEOUT_MS: number = 4500;
+const IMAGE_RESPONSE_MAX_BYTES: number = 128 * 1024 * 1024;
+const DEFAULT_IMAGE_RETRY_LIMIT: number = 5;
+// 后台请求保持原有吞吐量，只在一批请求完成后给系统网络栈留出一个事件循环的收尾窗口。
+// 阅读器和正式下载不受该窗口影响，仍可立即抢占空闲槽位。
+const MAX_BACKGROUND_IMAGE_DOWNLOADS: number = 8;
+const MAX_DOH_HATH_IMAGE_DOWNLOADS: number = 4;
+const BACKGROUND_IMAGE_SETTLE_DELAY_MS: number = 32;
+const BACKGROUND_IMAGE_RESUME_DELAY_MS: number = 750;
+let activeImageDownloads: number = 0;
+let activeBackgroundImageDownloads: number = 0;
+let activeHathImageDownloads: number = 0;
+let imageTempFileSequence: number = 0;
+let imageSlotSequence: number = 0;
+let backgroundImageDispatchPaused: boolean = false;
+let backgroundImageResumeTimer: number = -1;
+let backgroundImageSettleUntil: number = 0;
+let backgroundImageSettleTimer: number = -1;
+let imageRetryJitterSequence: number = 0;
+let readerImageSlotRefreshScheduled: boolean = false;
+
+export const IMAGE_DOWNLOAD_PRIORITY_BACKGROUND: number = 0;
+export const IMAGE_DOWNLOAD_PRIORITY_DOWNLOAD: number = 10;
+export const IMAGE_DOWNLOAD_PRIORITY_INTERACTIVE: number = 50;
+export const IMAGE_DOWNLOAD_PRIORITY_READER: number = 100;
+
+interface CachedImageFile {
+  path: string;
+  size: number;
+  modifiedAt: number;
+}
+
+interface ImageTransferResult {
+  statusCode: number;
+  path: string;
+}
+
+export interface CacheClearResult {
+  files: number;
+  bytes: number;
+}
+
+export interface CachePruneResult {
+  files: number;
+  bytes: number;
+  remainingBytes: number;
+}
+
+export interface ImageDownloadProgress {
+  receivedBytes: number;
+  totalBytes: number;
+}
+
+export type ImageDownloadProgressCallback = (progress: ImageDownloadProgress) => void;
+
+export interface ImageDownloadOptions {
+  retryLimit?: number;
+  readerPageUrl?: string;
+}
+
+interface ImageRequestHeader {
+  'Host'?: string;
+  'User-Agent': string;
+  'Accept': string;
+  'Accept-Language': string;
+  'Referer': string;
+  'Cookie'?: string;
+}
+
+export class ReaderImageCache {
+  private maintenance: Promise<void> = Promise.resolve();
+
+  pruneAsync(context: common.UIAbilityContext, protectedPath: string = ''): Promise<CachePruneResult> {
+    const pending = this.maintenance.then(() => maintainImageCacheAsync([
+      readerImageCacheDirectory(context), legacyReaderImageCacheDirectory(context)
+    ], readerImageCacheLimitBytes(), protectedPath, false));
+    this.maintenance = pending.then(() => {}, () => {});
+    return pending;
+  }
+
+  clearAsync(context: common.UIAbilityContext): Promise<CacheClearResult> {
+    const pending = this.maintenance.then(() => maintainImageCacheAsync([
+      readerImageCacheDirectory(context), legacyReaderImageCacheDirectory(context)
+    ], 0, '', true));
+    this.maintenance = pending.then(() => {}, () => {});
+    return pending;
+  }
+  async ensureCached(context: common.UIAbilityContext, imageUrl: string, referer: string,
+    priority: number = IMAGE_DOWNLOAD_PRIORITY_BACKGROUND, onProgress?: ImageDownloadProgressCallback,
+    cacheKey: string = '',
+    options?: ImageDownloadOptions): Promise<string> {
+    if (imageUrl.length === 0) {
+      return '';
+    }
+
+    const path = this.pathFor(context, imageUrl, cacheKey);
+    if (isUsableCachedImage(path)) {
+      return path;
+    }
+    const cached = this.migrateExistingCache(context, imageUrl, path, cacheKey);
+    if (cached.length > 0) {
+      return cached;
+    }
+
+    const pendingKey = imageDownloadPendingKey(imageUrl, cacheKey);
+    const pending = getPending(pendingKey);
+    if (pending !== null) {
+      if (pending.demand !== undefined && pending.demand.cancelled) {
+        // A quick reverse turn must not inherit the cancelled previous transfer.
+        await pending.promise.catch(() => '');
+        return this.ensureCached(context, imageUrl, referer, priority, onProgress, cacheKey, options);
+      }
+      if (pending.demand !== undefined && (options === undefined || options.readerPageUrl === undefined)) {
+        pending.demand.pinned = true;
+      } else if (pending.demand !== undefined && options !== undefined && options.readerPageUrl !== undefined) {
+        readerImageRequestControl.attach(pending.demand, options.readerPageUrl);
+      }
+      if (priority > pending.priority) {
+        pending.priority = priority;
+        promoteImageSlot(pendingKey, priority);
+      }
+      if (onProgress !== undefined) {
+        addPendingProgressListener(pendingKey, onProgress);
+      }
+      return pending.promise;
+    }
+
+    const listeners: ImageDownloadProgressCallback[] = [];
+    if (onProgress !== undefined) {
+      listeners.push(onProgress);
+    }
+    const progressCallback: ImageDownloadProgressCallback = (progress: ImageDownloadProgress): void => {
+      publishPendingProgress(pendingKey, progress);
+    };
+    const demand = options !== undefined && options.readerPageUrl !== undefined ?
+      readerImageRequestControl.acquire(options.readerPageUrl, priority) : undefined;
+    if (demand !== undefined && demand.cancelled) {
+      readerImageRequestControl.release(demand);
+      throw new Error('Reader image request cancelled');
+    }
+    if (demand !== undefined) {
+      demand.onChange = () => { refreshReaderImageSlot(pendingKey, demand); };
+    }
+    const promise = this.download(context, imageUrl, referer, path, pendingKey, priority, progressCallback, options, demand);
+    putPending(pendingKey, promise, listeners, priority, demand);
+    try {
+      return await promise;
+    } finally {
+      removePending(pendingKey);
+      readerImageRequestControl.release(demand);
+    }
+  }
+
+  getCachedPath(context: common.UIAbilityContext, imageUrl: string, cacheKey: string = ''): string {
+    if (imageUrl.length === 0) {
+      return '';
+    }
+
+    const path = this.pathFor(context, imageUrl, cacheKey);
+    if (isUsableCachedImage(path)) {
+      return path;
+    }
+    const candidates = this.pathCandidates(context, imageUrl, cacheKey);
+    for (let i = 0; i < candidates.length; i++) {
+      if (candidates[i] !== path && isUsableCachedImage(candidates[i])) {
+        return candidates[i];
+      }
+    }
+    return this.migrateExistingCache(context, imageUrl, path, cacheKey);
+  }
+
+  cachedSize(context: common.UIAbilityContext, imageUrl: string, cacheKey: string = ''): number {
+    const path = this.getCachedPath(context, imageUrl, cacheKey);
+    return path.length > 0 ? statFileSize(path) : 0;
+  }
+
+  removeCached(context: common.UIAbilityContext, imageUrl: string, cacheKey: string = ''): string {
+    if (imageUrl.length === 0) {
+      return '';
+    }
+
+    const path = this.pathFor(context, imageUrl, cacheKey);
+    const legacyPath = this.legacyPathFor(context, imageUrl, cacheKey);
+    const aliasPath = this.pathFor(context, imageUrl);
+    const legacyAliasPath = this.legacyPathFor(context, imageUrl);
+    let removed = '';
+    if (exists(path) && removeFile(path)) {
+      removed = path;
+    }
+    if (exists(legacyPath) && removeFile(legacyPath) && removed.length === 0) {
+      removed = legacyPath;
+    }
+    if (aliasPath !== path && exists(aliasPath) && removeFile(aliasPath) && removed.length === 0) {
+      removed = aliasPath;
+    }
+    if (legacyAliasPath !== legacyPath && exists(legacyAliasPath) && removeFile(legacyAliasPath) &&
+      removed.length === 0) {
+      removed = legacyAliasPath;
+    }
+    const candidates = this.pathCandidates(context, imageUrl, cacheKey)
+      .concat(this.pathCandidates(context, imageUrl));
+    for (let i = 0; i < candidates.length; i++) {
+      if (exists(candidates[i]) && removeFile(candidates[i]) && removed.length === 0) {
+        removed = candidates[i];
+      }
+    }
+    return removed;
+  }
+
+  // 把外部来源（如云端网盘）的图片字节写入统一图片缓存，跟随缓存一起清理/裁剪。
+  async storeBytes(context: common.UIAbilityContext, imageUrl: string, cacheKey: string, data: ArrayBuffer,
+    extensionHint: string = ''): Promise<string> {
+    if (imageUrl.length === 0 || data.byteLength <= 0) {
+      return '';
+    }
+    ensureDirectory(readerImageCacheDirectory(context));
+    const extension = extensionHint.length > 0 ? extensionHint : imageExtension(imageUrl);
+    const path = this.pathForExtension(context, imageUrl, extension, cacheKey);
+    const temporary = nextImageTempPath(path);
+    markImageTempPathActive(temporary);
+    try {
+      await writeImageCacheFile(data, temporary, path);
+    } catch (error) {
+      return '';
+    } finally {
+      await fs.unlink(temporary).catch(() => {});
+      unmarkImageTempPathActive(temporary);
+    }
+    return isUsableCachedImage(path) ? path : '';
+  }
+
+  clear(context: common.UIAbilityContext): CacheClearResult {
+    const result = clearImageCacheDirectory(readerImageCacheDirectory(context));
+    const legacy = clearImageCacheDirectory(legacyReaderImageCacheDirectory(context));
+    return { files: result.files + legacy.files, bytes: result.bytes + legacy.bytes };
+  }
+
+  size(context: common.UIAbilityContext): CacheClearResult {
+    return scanImageCacheSize([readerImageCacheDirectory(context), legacyReaderImageCacheDirectory(context)]);
+  }
+
+  async sizeAsync(context: common.UIAbilityContext): Promise<CacheClearResult> {
+    const directories = [readerImageCacheDirectory(context), legacyReaderImageCacheDirectory(context)];
+    let files = 0;
+    let bytes = 0;
+    for (let i = 0; i < directories.length; i++) {
+      try {
+        const names = await fs.listFile(directories[i]);
+        for (let j = 0; j < names.length; j++) {
+          if (names[j].endsWith('.part')) {
+            continue;
+          }
+          try {
+            const stat = await fs.stat(directories[i] + '/' + names[j]);
+            if (!stat.isDirectory()) {
+              files++;
+              bytes += stat.size;
+            }
+          } catch (_error) {
+            // A download or cache cleanup may remove files during the scan.
+          }
+        }
+      } catch (_error) {
+        // A new install may not have either cache directory yet.
+      }
+    }
+    return { files: files, bytes: bytes };
+  }
+
+  prune(context: common.UIAbilityContext, protectedPath: string = ''): CachePruneResult {
+    return pruneImageCache([
+      readerImageCacheDirectory(context),
+      legacyReaderImageCacheDirectory(context)
+    ], readerImageCacheLimitBytes(), protectedPath);
+  }
+
+  private async download(context: common.UIAbilityContext, imageUrl: string, referer: string, path: string,
+    pendingKey: string, priority: number, onProgress?: ImageDownloadProgressCallback,
+    options?: ImageDownloadOptions, demand?: ReaderImageDemand): Promise<string> {
+    ensureDirectory(readerImageCacheDirectory(context));
+    const slot = await acquireImageSlot(pendingKey, imageUrl, demand === undefined ? priority : demand.priority);
+    try {
+      return await this.downloadWithRetry(context, imageUrl, referer, path, priority, onProgress, options, demand);
+    } finally {
+      releaseImageSlot(slot);
+    }
+  }
+
+  private async downloadWithRetry(context: common.UIAbilityContext, imageUrl: string, referer: string, path: string,
+    priority: number, onProgress?: ImageDownloadProgressCallback, options?: ImageDownloadOptions,
+    demand?: ReaderImageDemand): Promise<string> {
+    let lastError = '';
+    let useDnsOverHttps = true;
+    const retryLimit = normalizedRetryLimit(options);
+    for (let attempt = 0; attempt < retryLimit; attempt++) {
+      throwIfReaderImageCancelled(demand);
+      try {
+        return await this.downloadOnce(context, imageUrl, referer, path, attempt, priority, onProgress,
+          useDnsOverHttps, demand);
+      } catch (error) {
+        throwIfReaderImageCancelled(demand);
+        removeFileQuietly(path);
+        lastError = imageNetworkErrorMessage(error);
+        if (useDnsOverHttps && shouldRetryImageWithoutDnsOverHttps(lastError, imageUrl)) {
+          useDnsOverHttps = false;
+          appLog.info(context, 'ReaderImageCache', 'DoH image lookup failed, retrying with system DNS, url=' +
+            trimLogUrl(imageUrl));
+          try {
+            return await this.downloadOnce(context, imageUrl, referer, path, attempt, priority, onProgress, false, demand);
+          } catch (fallbackError) {
+            throwIfReaderImageCancelled(demand);
+            removeFileQuietly(path);
+            lastError = imageNetworkErrorMessage(fallbackError);
+          }
+        }
+        appLog.warn(context, 'ReaderImageCache', 'Image attempt failed attempt=' + (attempt + 1).toString() +
+          '/' + retryLimit.toString() + ', url=' + trimLogUrl(imageUrl) + ': ' + lastError);
+        if (attempt >= retryLimit - 1 || !isTransientImageError(lastError)) {
+          throw new Error(lastError);
+        }
+        await sleepImageRetry(attempt);
+      }
+    }
+    throw new Error(lastError.length > 0 ? lastError : 'Image download failed');
+  }
+
+  private async downloadOnce(context: common.UIAbilityContext, imageUrl: string, referer: string, path: string,
+    attempt: number, priority: number, onProgress?: ImageDownloadProgressCallback,
+    useDnsOverHttps: boolean = true, demand?: ReaderImageDemand): Promise<string> {
+    let request: http.HttpRequest | null = null;
+    let plan: EhRequestPlan | null = null;
+    let admission: EhRequestAdmission | null = null;
+    let activeRequest: ActiveImageRequest | null = null;
+    let tempPath = '';
+    let startedAt = Date.now();
+    let outcomeRecorded = false;
+    try {
+      plan = createEhRequestPlan(imageUrl);
+      const header = buildImageRequestHeader(plan, referer, ehCookieStore.getCookieHeaderForUrl(imageUrl));
+      const timeout = imageRequestTimeoutMs();
+      await ensureEhHostRules();
+      throwIfReaderImageCancelled(demand);
+      admission = await acquireEhRequestAdmission(plan, demand === undefined ? priority : demand.priority);
+      throwIfReaderImageCancelled(demand);
+      startedAt = Date.now();
+      const options: http.HttpRequestOptions = {
+        method: http.RequestMethod.GET,
+        header: header,
+        expectDataType: http.HttpDataType.ARRAY_BUFFER,
+        maxLimit: IMAGE_RESPONSE_MAX_BYTES,
+        priority: demand === undefined ? Math.max(1, priority) : Math.max(1, demand.priority),
+        connectTimeout: frontingImageTimeout(plan, imageConnectTimeoutMs(plan, imageUrl, timeout),
+          imageUrl + '|connect|' + attempt.toString(), 350),
+        readTimeout: frontingImageTimeout(plan, imageRequestDeadlineMs(plan, attempt),
+          imageUrl + '|read|' + attempt.toString(), 1400)
+      };
+      applyEhNetworkOptions(options, plan, useDnsOverHttps);
+      tempPath = nextImageTempPath(path);
+      markImageTempPathActive(tempPath);
+      let result: ImageTransferResult;
+      if (demand !== undefined && supportsCancellableReaderTransfer(plan.fronted, options)) {
+        const response = await readerCancellableImageTransfer.download(plan.url, options, tempPath, demand,
+          IMAGE_RESPONSE_MAX_BYTES, (received: number, total: number) => {
+            if (onProgress !== undefined) {
+              onProgress({ receivedBytes: Math.max(0, received), totalBytes: Math.max(0, total) });
+            }
+          });
+        throwIfReaderImageCancelled(demand);
+        const finalPath = responseImagePath(path, headerImageExtension(response.header));
+        if (response.statusCode >= 200 && response.statusCode < 300) {
+          const stat = await fs.stat(tempPath);
+          if (stat.size <= 0 || stat.size > IMAGE_RESPONSE_MAX_BYTES) {
+            throw new Error('Invalid image response size');
+          }
+          await fs.rename(tempPath, finalPath);
+        }
+        result = { statusCode: response.statusCode, path: finalPath };
+      } else {
+        request = acquireHttpRequest();
+        if (plan.fronted) {
+          markHttpRequestVolatile(request);
+        }
+        request.on('dataReceiveProgress', (progress: http.DataReceiveProgressInfo): void => {
+          if (onProgress !== undefined) {
+            onProgress({
+              receivedBytes: Math.max(0, progress.receiveSize),
+              totalBytes: Math.max(0, progress.totalSize)
+            });
+          }
+        });
+        activeRequest = registerActiveImageRequest(request, priority, demand);
+        const response = await request.request(plan.url, options);
+        if (activeRequest.cancelRequested) {
+          throw new Error('Reader image request cancelled');
+        }
+        throwIfReaderImageCancelled(demand);
+        result = await finishImageBufferTransfer(response, tempPath, path);
+      }
+      const statusCode = result.statusCode;
+      const savedPath = result.path;
+
+      if (statusCode < 200 || statusCode >= 300) {
+        const routeOk = isEhRouteReachableStatus(statusCode);
+        recordEhRequestOutcome(plan, routeOk, Date.now() - startedAt);
+        if (!routeOk) {
+          hathQualityStore.recordFailure(context, imageUrl);
+        }
+        outcomeRecorded = true;
+        throw new Error(imageStatusMessage(statusCode));
+      }
+
+      const size = statFileSize(savedPath);
+      if (size <= 0) {
+        recordEhRequestOutcome(plan, false, Date.now() - startedAt);
+        hathQualityStore.recordFailure(context, imageUrl);
+        outcomeRecorded = true;
+        throw new Error('Empty image response');
+      }
+      const elapsedMs = Date.now() - startedAt;
+      recordEhRequestOutcome(plan, true, elapsedMs);
+      hathQualityStore.recordSuccess(context, imageUrl, elapsedMs, size);
+      outcomeRecorded = true;
+      if (onProgress !== undefined) {
+        onProgress({ receivedBytes: size, totalBytes: size });
+      }
+      return savedPath;
+    } catch (error) {
+      if (demand !== undefined && demand.cancelled) {
+        // Navigation cancellation is not a network/server quality failure.
+        outcomeRecorded = true;
+        throw new Error('Reader image request cancelled');
+      }
+      if (activeRequest !== null && activeRequest.cancelRequested) {
+        outcomeRecorded = true;
+        throw new Error('Reader image request cancelled');
+      }
+      if (plan !== null && !outcomeRecorded) {
+        recordEhRequestOutcome(plan, false, Date.now() - startedAt);
+        hathQualityStore.recordFailure(context, imageUrl);
+      }
+      throw new Error(imageNetworkErrorMessage(error));
+    } finally {
+      try {
+        const completedRequest = request;
+        if (completedRequest !== null) {
+          completedRequest.off('dataReceiveProgress');
+        }
+      } catch (_error) {
+      }
+      if (activeRequest !== null) {
+        unregisterActiveImageRequest(activeRequest);
+      }
+      if (request !== null) {
+        retireHttpRequest(request);
+      }
+      releaseEhRequestAdmission(admission);
+      if (tempPath.length > 0) {
+        removeFileQuietly(tempPath);
+        unmarkImageTempPathActive(tempPath);
+      }
+    }
+  }
+
+  private pathFor(context: common.UIAbilityContext, imageUrl: string, cacheKey: string = ''): string {
+    return this.pathForExtension(context, imageUrl, imageExtension(imageUrl), cacheKey);
+  }
+
+  private legacyPathFor(context: common.UIAbilityContext, imageUrl: string, cacheKey: string = ''): string {
+    return legacyReaderImageCacheDirectory(context) + '/' + stableImageKey(normalizeImageCacheKey(imageUrl, cacheKey)) +
+      imageExtension(imageUrl);
+  }
+
+  private pathForExtension(context: common.UIAbilityContext, imageUrl: string, extension: string,
+    cacheKey: string = ''): string {
+    return readerImageCacheDirectory(context) + '/' + stableImageKey(normalizeImageCacheKey(imageUrl, cacheKey)) +
+      extension;
+  }
+
+  private pathCandidates(context: common.UIAbilityContext, imageUrl: string, cacheKey: string = ''): string[] {
+    if (explicitImageExtension(imageUrl).length > 0) {
+      return [this.pathFor(context, imageUrl, cacheKey)];
+    }
+    const extensions: string[] = ['.webp', '.jpg', '.jpeg', '.png', '.gif'];
+    const paths: string[] = [];
+    for (let i = 0; i < extensions.length; i++) {
+      paths.push(this.pathForExtension(context, imageUrl, extensions[i], cacheKey));
+    }
+    return paths;
+  }
+
+  private migrateExistingCache(context: common.UIAbilityContext, imageUrl: string, path: string,
+    cacheKey: string = ''): string {
+    // A page identity must never adopt URL-only thumbnail/preview cache entries.
+    const candidates: string[] = [this.legacyPathFor(context, imageUrl, cacheKey)];
+    for (let i = 0; i < candidates.length; i++) {
+      const candidate = candidates[i];
+      if (candidate === path || !isUsableCachedImage(candidate)) {
+        continue;
+      }
+      if (migrateLegacyImageCacheFile(candidate, path)) {
+        return path;
+      }
+      return candidate;
+    }
+    return '';
+  }
+}
+
+function buildImageRequestHeader(plan: EhRequestPlan, referer: string, cookieHeader: string): ImageRequestHeader {
+  const header: ImageRequestHeader = {
+    'Host': plan.host,
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0 Safari/537.36 EhViewerHarmony/0.1',
+    'Accept': 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8',
+    'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
+    'Referer': referer
+  };
+  if (cookieHeader.length > 0) {
+    header.Cookie = cookieHeader;
+  }
+  return header;
+}
+
+function imageRequestTimeoutMs(): number {
+  const value = appSettingsStore.getValue('download_timeout', '30s');
+  if (value === '15s') {
+    return 15000;
+  }
+  if (value === '30s') {
+    return 30000;
+  }
+  if (value === '60s') {
+    return 60000;
+  }
+  return 30000;
+}
+
+function imageRequestDeadlineMs(plan: EhRequestPlan, attempt: number): number {
+  const timeout = imageRequestTimeoutMs();
+  if (!plan.fronted || attempt >= 2) {
+    return timeout;
+  }
+  return Math.min(timeout, 15000);
+}
+
+function imageConnectTimeoutMs(plan: EhRequestPlan, imageUrl: string, timeoutMs: number): number {
+  if (plan.fronted) {
+    return IMAGE_CONNECT_TIMEOUT_MS;
+  }
+  if (isHathImageUrl(imageUrl)) {
+    return Math.min(timeoutMs, 8000);
+  }
+  return Math.min(timeoutMs, 30000);
+}
+
+async function finishImageBufferTransfer(response: http.HttpResponse, tempPath: string,
+  path: string): Promise<ImageTransferResult> {
+  const statusCode = Number(response.responseCode);
+  const finalPath = responseImagePath(path, headerImageExtension(response.header));
+  if (statusCode >= 200 && statusCode < 300) {
+    if (!(response.result instanceof ArrayBuffer) || response.result.byteLength <= 0) {
+      throw new Error('Empty image response');
+    }
+    await writeImageCacheFile(response.result, tempPath, finalPath);
+  } else {
+    await fs.unlink(tempPath).catch(() => {});
+  }
+  return {
+    statusCode: statusCode,
+    path: finalPath
+  };
+}
+
+async function writeImageCacheFile(data: ArrayBuffer, temporary: string, destination: string): Promise<void> {
+  const file = await fs.open(temporary, fs.OpenMode.CREATE | fs.OpenMode.TRUNC | fs.OpenMode.READ_WRITE);
+  try {
+    let written = 0;
+    while (written < data.byteLength) {
+      const buffer = written === 0 ? data : data.slice(written);
+      const count = await fs.write(file.fd, buffer);
+      if (count <= 0 || count > buffer.byteLength) {
+        throw new Error('Incomplete image cache write');
+      }
+      written += count;
+    }
+  } finally {
+    await fs.close(file);
+  }
+  // Do not expose a partial image or remove the previous complete cache on failure.
+  await fs.rename(temporary, destination);
+}
+
+function registerActiveImageRequest(request: http.HttpRequest, priority: number,
+  demand?: ReaderImageDemand): ActiveImageRequest {
+  const active: ActiveImageRequest = {
+    request: request,
+    priority: priority,
+    cancelRequested: false,
+    demand: demand
+  };
+  ACTIVE_IMAGE_REQUESTS.push(active);
+  return active;
+}
+
+function unregisterActiveImageRequest(active: ActiveImageRequest): void {
+  const index = ACTIVE_IMAGE_REQUESTS.indexOf(active);
+  if (index >= 0) {
+    ACTIVE_IMAGE_REQUESTS.splice(index, 1);
+  }
+}
+
+function headerImageExtension(header: Object): string {
+  const headers = header as Record<string, Object>;
+  const keys = Object.keys(headers);
+  for (let i = 0; i < keys.length; i++) {
+    if (keys[i].toLowerCase() !== 'content-type') {
+      continue;
+    }
+    return contentTypeImageExtension(headers[keys[i]]);
+  }
+  return '';
+}
+
+function contentTypeImageExtension(value: Object): string {
+  if (typeof value === 'string') {
+    return imageExtensionFromContentType(value);
+  }
+  if (Array.isArray(value) && value.length > 0) {
+    const first = value[0] as Object;
+    if (typeof first === 'string') {
+      return imageExtensionFromContentType(first);
+    }
+  }
+  return '';
+}
+
+function imageExtensionFromContentType(value: string): string {
+  const type = value.split(';')[0].trim().toLowerCase();
+  if (type === 'image/webp') {
+    return '.webp';
+  }
+  if (type === 'image/png') {
+    return '.png';
+  }
+  if (type === 'image/gif') {
+    return '.gif';
+  }
+  if (type === 'image/jpeg' || type === 'image/jpg') {
+    return '.jpg';
+  }
+  return '';
+}
+
+function responseImagePath(path: string, responseExtension: string): string {
+  if (responseExtension.length === 0) {
+    return path;
+  }
+  const currentExtension = pathImageExtension(path);
+  if (currentExtension.length > 0 && currentExtension !== '.jpg') {
+    return path;
+  }
+  if (currentExtension === responseExtension) {
+    return path;
+  }
+  if (currentExtension.length === 0) {
+    return path + responseExtension;
+  }
+  return path.substring(0, path.length - currentExtension.length) + responseExtension;
+}
+
+function sleepImageRetry(attempt: number): Promise<void> {
+  const index = Math.min(attempt, IMAGE_RETRY_DELAYS_MS.length - 1);
+  const delay = IMAGE_RETRY_DELAYS_MS[index] + ((imageRetryJitterSequence++ * 97 + attempt * 53) % 260);
+  return new Promise<void>((resolve: (value: void | PromiseLike<void>) => void) => {
+    setTimeout(() => {
+      resolve();
+    }, delay);
+  });
+}
+
+function frontingImageTimeout(plan: EhRequestPlan, baseTimeoutMs: number, seed: string,
+  maxJitterMs: number): number {
+  if (!plan.fronted || maxJitterMs <= 0) {
+    return baseTimeoutMs;
+  }
+  let hash = 2166136261;
+  for (let i = 0; i < seed.length; i++) {
+    hash ^= seed.charCodeAt(i);
+    hash = Math.imul(hash, 16777619);
+  }
+  return baseTimeoutMs + ((hash >>> 0) % (maxJitterMs + 1));
+}
+
+function normalizedRetryLimit(options?: ImageDownloadOptions): number {
+  if (options === undefined || options.retryLimit === undefined) {
+    return DEFAULT_IMAGE_RETRY_LIMIT;
+  }
+  return Math.max(1, Math.min(DEFAULT_IMAGE_RETRY_LIMIT, Math.round(options.retryLimit)));
+}
+
+function isTransientImageError(message: string): boolean {
+  const lower = message.toLowerCase();
+  return lower.indexOf('timeout') >= 0 || lower.indexOf('temporary') >= 0 || lower.indexOf('reset') >= 0 ||
+    lower.indexOf('socket') >= 0 || lower.indexOf('network') >= 0 || lower.indexOf('incomplete') >= 0 ||
+    lower.indexOf('partial') >= 0 || lower.indexOf('transfer closed') >= 0 || lower.indexOf('recv') >= 0 ||
+    lower.indexOf('receive') >= 0 || lower.indexOf('503') >= 0 ||
+    lower.indexOf('504') >= 0 || lower.indexOf('522') >= 0 || lower.indexOf('524') >= 0 ||
+    lower.indexOf('500') >= 0 || lower.indexOf('502') >= 0 || lower.indexOf('520') >= 0 ||
+    lower.indexOf('521') >= 0 || lower.indexOf('523') >= 0 || lower.indexOf('525') >= 0 ||
+    lower.indexOf('526') >= 0 ||
+    lower.indexOf('ssl') >= 0 || lower.indexOf('tls') >= 0 || lower.indexOf('certificate') >= 0 ||
+    lower.indexOf('curlcode result 35') >= 0 || lower.indexOf('curl code 35') >= 0 ||
+    lower.indexOf('curl_code') >= 0 && lower.indexOf('35') >= 0 ||
+    lower.indexOf('http2') >= 0 || lower.indexOf('2300016') >= 0 || lower.indexOf('2300018') >= 0 ||
+    lower.indexOf('2300028') >= 0 || lower.indexOf('2300056') >= 0 || lower.indexOf('2300999') >= 0 ||
+    lower.indexOf('curl 18') >= 0 || lower.indexOf('curl 28') >= 0 || lower.indexOf('curl 56') >= 0 ||
+    lower.indexOf('2300007') >= 0 || lower.indexOf('230350') >= 0;
+}
+
+function shouldRetryImageWithoutDnsOverHttps(message: string, imageUrl: string): boolean {
+  if (currentDnsOverHttpsUrl().length === 0) {
+    return false;
+  }
+  if (message === 'Image DNS lookup failed') {
+    return true;
+  }
+  // A DoH endpoint timeout can be surfaced by Network Kit as a generic timeout before name lookup starts.
+  // H@H image hosts are short-lived and numerous, so retry these through system DNS instead of repeatedly
+  // sending the remaining attempts back to the same stalled DoH path.
+  return isHathImageUrl(imageUrl) && message === 'Image network timeout';
+}
+
+function imageStatusMessage(statusCode: number): string {
+  if (statusCode === 403) {
+    return 'Image access denied: check login cookies';
+  }
+  if (statusCode === 404) {
+    return 'Image not found';
+  }
+  if (statusCode === 429) {
+    return 'Too many image requests: slow down and retry later';
+  }
+  if (statusCode === 509) {
+    return 'Image limit reached';
+  }
+  if (statusCode === 408 || statusCode === 500 || statusCode === 502 || statusCode === 503 ||
+    statusCode === 504 || statusCode === 522 || statusCode === 524) {
+    return 'Temporary image network error: HTTP ' + statusCode.toString();
+  }
+  return 'HTTP ' + statusCode.toString();
+}
+
+function trimLogUrl(url: string): string {
+  if (url.length <= 180) {
+    return url;
+  }
+  return url.substring(0, 177) + '...';
+}
+
+function imageNetworkErrorMessage(error: Object): string {
+  let message = readableImageErrorMessage(error);
+  if (message.indexOf('Error: ') === 0) {
+    message = message.substring(7);
+  }
+  const lower = message.toLowerCase();
+  if (lower.indexOf('timeout') >= 0 || lower.indexOf('timed out') >= 0) {
+    return 'Image network timeout';
+  }
+  if (lower.indexOf('2300028') >= 0 || lower.indexOf('curlcode result 28') >= 0 ||
+    lower.indexOf('curl code 28') >= 0) {
+    return 'Image network timeout';
+  }
+  if (lower.indexOf('2300018') >= 0 || lower.indexOf('curlcode result 18') >= 0 ||
+    lower.indexOf('curl code 18') >= 0 || lower.indexOf('partial') >= 0 ||
+    lower.indexOf('transfer closed') >= 0) {
+    return 'Image transfer incomplete';
+  }
+  if (lower.indexOf('2300056') >= 0 || lower.indexOf('curlcode result 56') >= 0 ||
+    lower.indexOf('curl code 56') >= 0 || lower.indexOf('recv') >= 0 || lower.indexOf('receive') >= 0) {
+    return 'Image network connection interrupted';
+  }
+  if (lower.indexOf('ssl') >= 0 || lower.indexOf('tls') >= 0 || lower.indexOf('certificate') >= 0) {
+    return 'Image TLS connection failed';
+  }
+  if (lower.indexOf('curlcode result 35') >= 0 || lower.indexOf('curl code 35') >= 0 ||
+    lower.indexOf('curl_code') >= 0 && lower.indexOf('35') >= 0 || lower.indexOf('2300999') >= 0) {
+    return 'Image TLS connection failed';
+  }
+  if (lower.indexOf('dns') >= 0 || lower.indexOf('unknownhost') >= 0 || lower.indexOf('2300006') >= 0 ||
+    lower.indexOf('curlcode result 6') >= 0 || lower.indexOf('curl code 6') >= 0) {
+    return 'Image DNS lookup failed';
+  }
+  return message.length > 0 ? message : 'Image download failed';
+}
+
+function readableImageErrorMessage(error: Object): string {
+  if (error instanceof Error && error.message.length > 0) {
+    return error.message;
+  }
+  const record = error as Record<string, Object>;
+  const message = record['message'];
+  const code = record['code'];
+  if (typeof message === 'string' && message.length > 0) {
+    if (typeof code === 'number' || typeof code === 'string') {
+      return 'code ' + String(code) + ': ' + message;
+    }
+    return message;
+  }
+  try {
+    const json = JSON.stringify(error);
+    if (json.length > 0 && json !== '{}') {
+      return json;
+    }
+  } catch (jsonError) {
+  }
+  return String(error);
+}
+
+function nextImageTempPath(path: string): string {
+  imageTempFileSequence++;
+  return path + '.' + Date.now().toString() + '_' + imageTempFileSequence.toString() + '.part';
+}
+
+function markImageTempPathActive(path: string): void {
+  if (ACTIVE_IMAGE_TEMP_PATHS.indexOf(path) < 0) {
+    ACTIVE_IMAGE_TEMP_PATHS.push(path);
+  }
+}
+
+function unmarkImageTempPathActive(path: string): void {
+  const index = ACTIVE_IMAGE_TEMP_PATHS.indexOf(path);
+  if (index >= 0) {
+    ACTIVE_IMAGE_TEMP_PATHS.splice(index, 1);
+  }
+}
+
+function isImageTempPathActive(path: string): boolean {
+  return ACTIVE_IMAGE_TEMP_PATHS.indexOf(path) >= 0;
+}
+
+function removeFile(path: string): boolean {
+  try {
+    if (exists(path)) {
+      fs.unlinkSync(path);
+      return true;
+    }
+  } catch (error) {
+  }
+  return false;
+}
+
+function clearImageCacheDirectory(directory: string): CacheClearResult {
+  let files = 0;
+  let bytes = 0;
+  try {
+    const names = fs.listFileSync(directory);
+    for (let i = 0; i < names.length; i++) {
+      const path = directory + '/' + names[i];
+      const size = statFileSize(path);
+      if (removeFile(path)) {
+        files++;
+        bytes += size;
+      }
+    }
+  } catch (error) {
+  }
+  return { files: files, bytes: bytes };
+}
+
+function isUsableCachedImage(path: string): boolean {
+  if (path.length === 0 || path.endsWith('.part')) {
+    return false;
+  }
+  return statFileSize(path) > 0;
+}
+
+function statFileSize(path: string): number {
+  try {
+    return fs.statSync(path).size;
+  } catch (error) {
+    return 0;
+  }
+}
+
+function migrateLegacyImageCacheFile(legacyPath: string, path: string): boolean {
+  ensureDirectory(parentDirectory(path));
+  try {
+    fs.moveFileSync(legacyPath, path);
+    return true;
+  } catch (error) {
+  }
+  try {
+    fs.copyFileSync(legacyPath, path);
+    removeFileQuietly(legacyPath);
+    return exists(path);
+  } catch (error) {
+    removeFileQuietly(path);
+  }
+  return false;
+}
+
+function parentDirectory(path: string): string {
+  const index = path.lastIndexOf('/');
+  return index > 0 ? path.substring(0, index) : path;
+}
+
+export function readerImageCacheDirectory(context: common.UIAbilityContext): string {
+  return context.filesDir + '/reader_images';
+}
+
+function legacyReaderImageCacheDirectory(context: common.UIAbilityContext): string {
+  return context.cacheDir + '/reader_images';
+}
+
+export function readerImageCacheLimitBytes(): number {
+  return parseCacheSizeBytes(appSettingsStore.getValue('read_cache_size', '160 MB'));
+}
+
+function parseCacheSizeBytes(value: string): number {
+  const normalized = value.trim().toUpperCase();
+  if (normalized === '40 MB' || normalized === '80 MB') {
+    return DEFAULT_IMAGE_CACHE_BYTES;
+  }
+  if (normalized.endsWith('MB')) {
+    const numberPart = normalized.substring(0, normalized.length - 2).trim();
+    const mb = Number.parseInt(numberPart, 10);
+    if (Number.isFinite(mb) && mb > 0) {
+      return Math.max(160, Math.min(2048, mb)) * 1024 * 1024;
+    }
+  }
+  if (normalized.endsWith('GB')) {
+    const numberPart = normalized.substring(0, normalized.length - 2).trim();
+    const gb = Number.parseInt(numberPart, 10);
+    if (Number.isFinite(gb) && gb > 0) {
+      return Math.max(1, Math.min(2, gb)) * 1024 * 1024 * 1024;
+    }
+  }
+  return DEFAULT_IMAGE_CACHE_BYTES;
+}
+
+function scanImageCacheSize(directories: string[]): CacheClearResult {
+  let files = 0;
+  let bytes = 0;
+  const entries = scanImageCacheFiles(directories);
+  for (let i = 0; i < entries.length; i++) {
+    files++;
+    bytes += entries[i].size;
+  }
+  return { files: files, bytes: bytes };
+}
+
+async function maintainImageCacheAsync(directories: string[], maxBytes: number,
+  protectedPath: string, clearAll: boolean): Promise<CachePruneResult> {
+  const files: CachedImageFile[] = [];
+  let total = 0;
+  for (let i = 0; i < directories.length; i++) {
+    try {
+      const names = await fs.listFile(directories[i]);
+      for (let j = 0; j < names.length; j++) {
+        const path = directories[i] + '/' + names[j];
+        try {
+          const stat = await fs.stat(path);
+          if (stat.isDirectory()) {
+            continue;
+          }
+          if (path.endsWith('.part')) {
+            if (!isImageTempPathActive(path)) {
+              await fs.unlink(path);
+            }
+            continue;
+          }
+          files.push({ path: path, size: stat.size, modifiedAt: stat.mtime });
+          total += stat.size;
+        } catch (_error) {
+        }
+      }
+    } catch (_error) {
+    }
+  }
+  files.sort((left: CachedImageFile, right: CachedImageFile) => left.modifiedAt - right.modifiedAt);
+  let removedFiles = 0;
+  let removedBytes = 0;
+  for (let i = 0; i < files.length && (clearAll || total > maxBytes); i++) {
+    const file = files[i];
+    if (file.path === protectedPath) {
+      continue;
+    }
+    try {
+      const current = await fs.stat(file.path);
+      if (current.size !== file.size || current.mtime !== file.modifiedAt) {
+        continue;
+      }
+      await fs.unlink(file.path);
+      removedFiles++;
+      removedBytes += file.size;
+      total -= file.size;
+    } catch (_error) {
+    }
+  }
+  return { files: removedFiles, bytes: removedBytes, remainingBytes: total };
+}
+
+function pruneImageCache(directories: string[], maxBytes: number, protectedPath: string = ''): CachePruneResult {
+  let files: CachedImageFile[] = [];
+  let total = 0;
+  let removedFiles = 0;
+  let removedBytes = 0;
+  files = scanImageCacheFiles(directories);
+  for (let i = 0; i < files.length; i++) {
+    total += files[i].size;
+  }
+
+  if (total <= maxBytes) {
+    return { files: 0, bytes: 0, remainingBytes: total };
+  }
+
+  files = files.sort((left: CachedImageFile, right: CachedImageFile) => left.modifiedAt - right.modifiedAt);
+  for (let i = 0; i < files.length && total > maxBytes; i++) {
+    if (protectedPath.length > 0 && files[i].path === protectedPath) {
+      continue;
+    }
+    if (removeFile(files[i].path)) {
+      removedFiles++;
+      removedBytes += files[i].size;
+      total -= files[i].size;
+    }
+  }
+  return { files: removedFiles, bytes: removedBytes, remainingBytes: total };
+}
+
+function scanImageCacheFiles(directories: string[]): CachedImageFile[] {
+  const files: CachedImageFile[] = [];
+  for (let i = 0; i < directories.length; i++) {
+    files.push(...scanImageCacheDirectory(directories[i]));
+  }
+  return files;
+}
+
+function scanImageCacheDirectory(directory: string): CachedImageFile[] {
+  const files: CachedImageFile[] = [];
+  try {
+    const names = fs.listFileSync(directory);
+    for (let i = 0; i < names.length; i++) {
+      const path = directory + '/' + names[i];
+      try {
+        const stat = fs.statSync(path);
+        if (stat.isDirectory()) {
+          continue;
+        }
+        if (path.endsWith('.part')) {
+          if (!isImageTempPathActive(path)) {
+            removeFileQuietly(path);
+          }
+          continue;
+        }
+        files.push({
+          path: path,
+          size: stat.size,
+          modifiedAt: stat.mtime
+        });
+      } catch (error) {
+      }
+    }
+  } catch (error) {
+  }
+  return files;
+}
+
+function getPending(url: string): PendingImageDownload | null {
+  for (let i = 0; i < PENDING_IMAGE_DOWNLOADS.length; i++) {
+    if (PENDING_IMAGE_DOWNLOADS[i].url === url) {
+      return PENDING_IMAGE_DOWNLOADS[i];
+    }
+  }
+  return null;
+}
+
+function putPending(url: string, promise: Promise<string>, listeners: ImageDownloadProgressCallback[],
+  priority: number, demand?: ReaderImageDemand): void {
+  removePending(url);
+  PENDING_IMAGE_DOWNLOADS.push({
+    url: url,
+    promise: promise,
+    listeners: listeners,
+    lastProgress: { receivedBytes: 0, totalBytes: 0 },
+    priority: priority,
+    demand: demand
+  });
+}
+
+function removePending(url: string): void {
+  for (let i = PENDING_IMAGE_DOWNLOADS.length - 1; i >= 0; i--) {
+    if (PENDING_IMAGE_DOWNLOADS[i].url === url) {
+      PENDING_IMAGE_DOWNLOADS.splice(i, 1);
+    }
+  }
+}
+
+function addPendingProgressListener(url: string, listener: ImageDownloadProgressCallback): void {
+  const pending = getPending(url);
+  if (pending === null) {
+    return;
+  }
+  pending.listeners.push(listener);
+  if (pending.lastProgress.receivedBytes > 0 || pending.lastProgress.totalBytes > 0) {
+    listener(pending.lastProgress);
+  }
+}
+
+function publishPendingProgress(url: string, progress: ImageDownloadProgress): void {
+  const pending = getPending(url);
+  if (pending === null) {
+    return;
+  }
+  pending.lastProgress = {
+    receivedBytes: Math.max(0, progress.receivedBytes),
+    totalBytes: Math.max(0, progress.totalBytes)
+  };
+  const listeners = pending.listeners.slice();
+  for (let i = 0; i < listeners.length; i++) {
+    try {
+      listeners[i](pending.lastProgress);
+    } catch (error) {
+    }
+  }
+}
+
+function configuredImageDownloadLimit(): number {
+  const value = Number.parseInt(appSettingsStore.getValue('download_thread', '3'));
+  if (Number.isNaN(value) || value <= 0) {
+    return 1;
+  }
+  return Math.max(1, Math.min(value, 10));
+}
+
+function acquireImageSlot(key: string, imageUrl: string, priority: number): Promise<AcquiredImageSlot> {
+  return new Promise<AcquiredImageSlot>((resolve: (value: AcquiredImageSlot | PromiseLike<AcquiredImageSlot>) => void,
+    reject: (reason?: Object) => void) => {
+    WAITING_IMAGE_SLOTS.push({
+      key: key,
+      priority: priority,
+      sequence: imageSlotSequence++,
+      background: isBackgroundImagePriority(priority),
+      hath: shouldLimitHathImageConcurrency(imageUrl),
+      resolve: resolve,
+      reject: (error: Error) => {
+        reject(error);
+      }
+    });
+    dispatchWaitingImageSlots();
+  });
+}
+
+function releaseImageSlot(slot: AcquiredImageSlot): void {
+  activeImageDownloads = Math.max(0, activeImageDownloads - 1);
+  if (slot.background) {
+    activeBackgroundImageDownloads = Math.max(0, activeBackgroundImageDownloads - 1);
+  }
+  if (slot.hath) {
+    activeHathImageDownloads = Math.max(0, activeHathImageDownloads - 1);
+  }
+  if (slot.background) {
+    markBackgroundImageSettleWindow();
+  }
+  dispatchWaitingImageSlots();
+}
+
+function markBackgroundImageSettleWindow(): void {
+  backgroundImageSettleUntil = Math.max(backgroundImageSettleUntil,
+    Date.now() + BACKGROUND_IMAGE_SETTLE_DELAY_MS);
+  scheduleBackgroundImageSettleDispatch();
+}
+
+function scheduleBackgroundImageSettleDispatch(): void {
+  if (backgroundImageSettleTimer >= 0) {
+    clearTimeout(backgroundImageSettleTimer);
+  }
+  const delay = Math.max(1, backgroundImageSettleUntil - Date.now());
+  backgroundImageSettleTimer = setTimeout(() => {
+    backgroundImageSettleTimer = -1;
+    if (Date.now() < backgroundImageSettleUntil) {
+      scheduleBackgroundImageSettleDispatch();
+      return;
+    }
+    dispatchWaitingImageSlots();
+  }, delay);
+}
+
+function promoteImageSlot(key: string, priority: number): void {
+  for (let i = 0; i < WAITING_IMAGE_SLOTS.length; i++) {
+    if (WAITING_IMAGE_SLOTS[i].key === key && priority > WAITING_IMAGE_SLOTS[i].priority) {
+      WAITING_IMAGE_SLOTS[i].priority = priority;
+      WAITING_IMAGE_SLOTS[i].background = isBackgroundImagePriority(priority);
+    }
+  }
+  dispatchWaitingImageSlots();
+}
+
+function throwIfReaderImageCancelled(demand: ReaderImageDemand | undefined): void {
+  if (demand !== undefined && demand.cancelled) {
+    throw new Error('Reader image request cancelled');
+  }
+}
+
+function refreshReaderImageSlot(key: string, demand: ReaderImageDemand): void {
+  for (let i = WAITING_IMAGE_SLOTS.length - 1; i >= 0; i--) {
+    if (WAITING_IMAGE_SLOTS[i].key !== key) {
+      continue;
+    }
+    if (demand.cancelled) {
+      WAITING_IMAGE_SLOTS.splice(i, 1)[0].reject(new Error('Reader image request cancelled'));
+    } else {
+      WAITING_IMAGE_SLOTS[i].priority = demand.priority;
+      WAITING_IMAGE_SLOTS[i].background = false;
+    }
+  }
+  // Apply the complete new window before dispatching; never start an old queued
+  // page halfway through cancelling/reprioritising the rest of the batch.
+  if (!readerImageSlotRefreshScheduled) {
+    readerImageSlotRefreshScheduled = true;
+    setTimeout(() => {
+      readerImageSlotRefreshScheduled = false;
+      dispatchWaitingImageSlots();
+    }, 0);
+  }
+}
+
+function dispatchWaitingImageSlots(): void {
+  const limit = configuredImageDownloadLimit();
+  // Two bounded foreground slots cover a visible spread while cancelled native
+  // tasks drain. Never grow this reserve with the number of rapid page turns.
+  while (activeImageDownloads < limit + 2 && WAITING_IMAGE_SLOTS.length > 0) {
+    let bestIndex = -1;
+    for (let i = 0; i < WAITING_IMAGE_SLOTS.length; i++) {
+      const candidate = WAITING_IMAGE_SLOTS[i];
+      if (!canDispatchImageSlot(candidate, limit)) {
+        continue;
+      }
+      if (bestIndex < 0) {
+        bestIndex = i;
+        continue;
+      }
+      const best = WAITING_IMAGE_SLOTS[bestIndex];
+      if (candidate.priority > best.priority ||
+        (candidate.priority === best.priority && candidate.sequence < best.sequence)) {
+        bestIndex = i;
+      }
+    }
+    if (bestIndex < 0) {
+      return;
+    }
+    const next = WAITING_IMAGE_SLOTS.splice(bestIndex, 1)[0];
+    activeImageDownloads++;
+    if (next.background) {
+      activeBackgroundImageDownloads++;
+    }
+    if (next.hath) {
+      activeHathImageDownloads++;
+    }
+    next.resolve({
+      background: next.background,
+      hath: next.hath
+    });
+  }
+}
+
+function canDispatchImageSlot(slot: WaitingImageSlot, totalLimit: number): boolean {
+  if (activeImageDownloads >= totalLimit && slot.priority < READER_VISIBLE_IMAGE_PRIORITY) {
+    return false;
+  }
+  const hathLimit = Math.min(totalLimit, MAX_DOH_HATH_IMAGE_DOWNLOADS) +
+    (slot.priority >= READER_VISIBLE_IMAGE_PRIORITY ? 2 : 0);
+  if (slot.hath && activeHathImageDownloads >= hathLimit) {
+    return false;
+  }
+  if (!slot.background) {
+    return true;
+  }
+  if (backgroundImageDispatchPaused) {
+    return false;
+  }
+  if (Date.now() < backgroundImageSettleUntil) {
+    return false;
+  }
+  return activeBackgroundImageDownloads < Math.min(totalLimit, MAX_BACKGROUND_IMAGE_DOWNLOADS);
+}
+
+function isBackgroundImagePriority(priority: number): boolean {
+  return priority <= IMAGE_DOWNLOAD_PRIORITY_BACKGROUND;
+}
+
+function isHathImageUrl(imageUrl: string): boolean {
+  const match = /^https?:\/\/([^\/?#]+)/i.exec(imageUrl);
+  if (match === null) {
+    return false;
+  }
+  let host = match[1].toLowerCase();
+  if (host.startsWith('[')) {
+    const closingBracket = host.indexOf(']');
+    host = closingBracket > 0 ? host.substring(1, closingBracket) : host;
+  } else {
+    const portSeparator = host.lastIndexOf(':');
+    if (portSeparator > 0) {
+      host = host.substring(0, portSeparator);
+    }
+  }
+  return host === 's.exhentai.org' || host.endsWith('.hath.network');
+}
+
+function shouldLimitHathImageConcurrency(imageUrl: string): boolean {
+  return currentDnsOverHttpsUrl().length > 0 && isHathImageUrl(imageUrl);
+}
+
+export function cancelQueuedReaderImageRequests(): number {
+  let cancelled = 0;
+  for (let i = WAITING_IMAGE_SLOTS.length - 1; i >= 0; i--) {
+    if (WAITING_IMAGE_SLOTS[i].priority < READER_PREFETCH_IMAGE_PRIORITY) {
+      continue;
+    }
+    const pending = getPending(WAITING_IMAGE_SLOTS[i].key);
+    if (pending !== null && pending.demand !== undefined && pending.demand.pinned) {
+      continue;
+    }
+    const waiting = WAITING_IMAGE_SLOTS.splice(i, 1)[0];
+    waiting.reject(new Error('Reader image request cancelled'));
+    cancelled++;
+  }
+  for (let i = 0; i < ACTIVE_IMAGE_REQUESTS.length; i++) {
+    const active = ACTIVE_IMAGE_REQUESTS[i];
+    if (active.priority < READER_PREFETCH_IMAGE_PRIORITY || active.cancelRequested ||
+      (active.demand !== undefined && active.demand.pinned)) {
+      continue;
+    }
+    active.cancelRequested = true;
+    cancelHttpRequest(active.request);
+    cancelled++;
+  }
+  return cancelled;
+}
+
+export function pauseBackgroundImageRequests(): void {
+  backgroundImageDispatchPaused = true;
+  if (backgroundImageResumeTimer >= 0) {
+    clearTimeout(backgroundImageResumeTimer);
+    backgroundImageResumeTimer = -1;
+  }
+}
+
+export function resumeBackgroundImageRequests(): void {
+  pauseBackgroundImageRequests();
+  backgroundImageResumeTimer = setTimeout(() => {
+    backgroundImageResumeTimer = -1;
+    backgroundImageDispatchPaused = false;
+    dispatchWaitingImageSlots();
+  }, BACKGROUND_IMAGE_RESUME_DELAY_MS);
+}
+
+function stableImageKey(value: string): string {
+  let hash = 2166136261;
+  for (let i = 0; i < value.length; i++) {
+    hash ^= value.charCodeAt(i);
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0).toString(16);
+}
+
+function normalizeImageCacheKey(imageUrl: string, cacheKey: string): string {
+  return cacheKey.length > 0 ? cacheKey : imageUrl;
+}
+
+function imageDownloadPendingKey(imageUrl: string, cacheKey: string): string {
+  return normalizeImageCacheKey(imageUrl, cacheKey) + '|' + imageUrl;
+}
+
+function explicitImageExtension(url: string): string {
+  const clean = url.split('?')[0].toLowerCase();
+  const dot = clean.lastIndexOf('.');
+  if (dot >= 0) {
+    const extension = clean.substring(dot);
+    if (extension === '.jpg' || extension === '.jpeg' || extension === '.png' || extension === '.webp' ||
+      extension === '.gif') {
+      return extension;
+    }
+  }
+  return '';
+}
+
+function pathImageExtension(path: string): string {
+  const dot = path.lastIndexOf('.');
+  if (dot < 0) {
+    return '';
+  }
+  const extension = path.substring(dot).toLowerCase();
+  if (extension === '.jpg' || extension === '.jpeg' || extension === '.png' || extension === '.webp' ||
+    extension === '.gif') {
+    return extension;
+  }
+  return '';
+}
+
+function imageExtension(url: string): string {
+  const explicit = explicitImageExtension(url);
+  if (explicit.length > 0) {
+    return explicit;
+  }
+  return '.jpg';
+}
+
+export const readerImageCache: ReaderImageCache = new ReaderImageCache();

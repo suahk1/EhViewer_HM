@@ -1,0 +1,335 @@
+import { common } from '@kit.AbilityKit';
+import { request } from '@kit.BasicServicesKit';
+import { fileIo as fs } from '@kit.CoreFileKit';
+import { GalleryInfo, GallerySite } from '../model/GalleryModels';
+import { ehCookieStore } from './EhCookieStore';
+import { appLog } from './AppLogService';
+import {
+  DownloadNotificationText,
+  downloadNotificationText,
+  ensureDownloadNotificationEnabled,
+  publishDownloadResultNotification
+} from './DownloadNotificationSupport';
+import { importDownloadedArchiveAndRegister } from './DownloadZipImportService';
+import { getMainWindow } from './WindowChromeController';
+import { uiStatusText, uiText } from '../shared/AppRuntime';
+import { ehDownloadFileStore } from './EhDownloadFileStore';
+import { themePrimaryColor, themeSecondaryText } from '../shared/AppPalette';
+
+const DOWNLOAD_USER_AGENT: string = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 ' +
+  '(KHTML, like Gecko) Chrome/118.0.0.0 Safari/537.36';
+const PUBLIC_DOWNLOAD_CACHE_DIRECTORY: string = 'public_downloads';
+const ACTIVE_PUBLIC_DOWNLOAD_TASKS: request.agent.Task[] = [];
+const ARCHIVE_NOTIFICATION_ID_BASE: number = 9000;
+let nextArchiveNotificationId: number = ARCHIVE_NOTIFICATION_ID_BASE;
+
+export interface PublicDownloadStartResult {
+  taskId: string;
+  path: string;
+}
+
+export async function startPublicDownload(context: common.UIAbilityContext, url: string, referer: string,
+  directory: string, fileName: string, title: string, gallery?: GalleryInfo,
+  site: GallerySite = GallerySite.E): Promise<PublicDownloadStartResult> {
+  try {
+    ensureDirectory(directory);
+    const path = uniqueDownloadPath(directory, sanitizeFileName(fileName));
+    const cacheDirectory = context.cacheDir + '/' + PUBLIC_DOWNLOAD_CACHE_DIRECTORY;
+    ensureDirectory(cacheDirectory);
+    const cachePath = uniqueDownloadPath(cacheDirectory, Date.now().toString() + '_' + sanitizeFileName(fileName));
+    const headers: Record<string, string> = {};
+    headers['Referer'] = referer;
+    headers['Cookie'] = ehCookieStore.getCookieHeaderForUrl(url);
+    headers['User-Agent'] = DOWNLOAD_USER_AGENT;
+    headers['Accept'] = '*/*';
+    await ensureDownloadNotificationEnabled(context);
+    const displayName = title.length > 0 ? title : sanitizeFileName(fileName);
+    const notificationText: DownloadNotificationText = downloadNotificationText(displayName, 'Downloading');
+    const notificationId = allocateArchiveNotificationId();
+
+    if (canIUse('SystemCapability.Request.FileTransferAgent')) {
+      return await startAgentPublicDownload(context, url, headers, cachePath, path, directory, notificationId,
+        displayName, notificationText, gallery, site);
+    }
+    if (canIUse('SystemCapability.MiscServices.Download')) {
+      return await startLegacyPublicDownload(context, url, headers, cachePath, path, directory, notificationId,
+        displayName, gallery, site);
+    }
+    throw new Error('No public download capability is available on this device');
+  } catch (error) {
+    throw new Error(String(error));
+  }
+}
+
+async function startAgentPublicDownload(context: common.UIAbilityContext, url: string,
+  headers: Record<string, string>, cachePath: string, path: string, directory: string, notificationId: number,
+  displayName: string, notificationText: DownloadNotificationText, gallery: GalleryInfo | undefined,
+  site: GallerySite): Promise<PublicDownloadStartResult> {
+  const config: request.agent.Config = {
+    action: request.agent.Action.DOWNLOAD,
+    url: url,
+    title: notificationText.fileName,
+    description: 'EhViewer archive download',
+    mode: request.agent.Mode.BACKGROUND,
+    overwrite: false,
+    method: 'GET',
+    headers: headers,
+    saveas: cachePath,
+    network: request.agent.Network.ANY,
+    metered: true,
+    roaming: true,
+    gauge: true,
+    notification: {
+      title: notificationText.title,
+      text: notificationText.fileName,
+      visibility: request.agent.VISIBILITY_PROGRESS
+    }
+  };
+  const task = await request.agent.create(context, config);
+  let terminalHandled = false;
+  const completed = (_progress: request.agent.Progress): void => {
+    if (terminalHandled) {
+      return;
+    }
+    terminalHandled = true;
+    const saved = finishPublicDownload(context, task, cachePath, path, completed, failed);
+    finishArchiveImport(context, path, directory, notificationId, displayName, saved, gallery, site);
+  };
+  const failed = (_progress: request.agent.Progress): void => {
+    if (terminalHandled) {
+      return;
+    }
+    terminalHandled = true;
+    appLog.error(context, 'PublicDownload', 'Download task failed tid=' + task.tid + ', target=' + path);
+    removeFileQuietly(cachePath);
+    releasePublicDownloadTask(task, completed, failed);
+    publishDownloadResultNotification(context, notificationId, displayName, 'Download failed').catch(() => {});
+  };
+  task.on('completed', completed);
+  task.on('failed', failed);
+  ACTIVE_PUBLIC_DOWNLOAD_TASKS.push(task);
+  try {
+    await task.start();
+  } catch (error) {
+    releasePublicDownloadTask(task, completed, failed);
+    removeFileQuietly(cachePath);
+    throw new Error(String(error));
+  }
+  return { taskId: task.tid, path: path };
+}
+
+async function startLegacyPublicDownload(context: common.UIAbilityContext, url: string,
+  headers: Record<string, string>, cachePath: string, path: string, directory: string, notificationId: number,
+  displayName: string, gallery: GalleryInfo | undefined, site: GallerySite): Promise<PublicDownloadStartResult> {
+  const config: request.DownloadConfig = {
+    url: url,
+    header: headers,
+    filePath: cachePath,
+    enableMetered: true,
+    enableRoaming: true,
+    background: true,
+    title: displayName,
+    description: 'EhViewer archive download'
+  };
+  const task = await request.downloadFile(context, config);
+  let terminalHandled = false;
+  const release = (): void => {
+    try {
+      task.off('complete', completed);
+    } catch (error) {
+    }
+    try {
+      task.off('fail', failed);
+    } catch (error) {
+    }
+    try {
+      task.delete();
+    } catch (error) {
+    }
+  };
+  const completed = (): void => {
+    if (terminalHandled) {
+      return;
+    }
+    terminalHandled = true;
+    release();
+    const saved = finishLegacyPublicDownload(context, cachePath, path);
+    finishArchiveImport(context, path, directory, notificationId, displayName, saved, gallery, site);
+  };
+  const failed = (): void => {
+    if (terminalHandled) {
+      return;
+    }
+    terminalHandled = true;
+    release();
+    removeFileQuietly(cachePath);
+    appLog.error(context, 'PublicDownload', 'Legacy download task failed, target=' + path);
+    publishDownloadResultNotification(context, notificationId, displayName, 'Download failed').catch(() => {});
+  };
+  task.on('complete', completed);
+  task.on('fail', failed);
+  return { taskId: 'legacy-' + Date.now().toString(), path: path };
+}
+
+function finishLegacyPublicDownload(context: common.UIAbilityContext, cachePath: string,
+  targetPath: string): boolean {
+  const partPath = targetPath + '.part';
+  let saved = false;
+  try {
+    removeFileQuietly(partPath);
+    fs.copyFileSync(cachePath, partPath);
+    fs.moveFileSync(partPath, targetPath);
+    saved = true;
+    appLog.info(context, 'PublicDownload', 'Saved legacy download, target=' + targetPath);
+  } catch (error) {
+    removeFileQuietly(partPath);
+    appLog.error(context, 'PublicDownload', 'Saving legacy download failed, target=' + targetPath + ': ' +
+      String(error));
+  } finally {
+    removeFileQuietly(cachePath);
+  }
+  return saved;
+}
+
+function finishArchiveImport(context: common.UIAbilityContext, path: string, directory: string,
+  notificationId: number, displayName: string, saved: boolean, gallery: GalleryInfo | undefined,
+  site: GallerySite): void {
+  if (!saved) {
+    publishDownloadResultNotification(context, notificationId, displayName, 'Download failed').catch(() => {});
+    return;
+  }
+  const importPromise = gallery === undefined ? Promise.resolve(0) :
+    importDownloadedArchiveAndRegister(context, path, site, gallery).catch(() => 0);
+  importPromise.then((restored: number) => {
+    if (restored > 0) {
+      showRestoredGalleryStatus(restored, path);
+    }
+    publishDownloadResultNotification(context, notificationId, displayName, 'Download completed', directory)
+      .catch(() => {});
+  }).catch(() => {});
+}
+
+function showRestoredGalleryStatus(count: number, archivePath: string): void {
+  const win = getMainWindow();
+  if (win === undefined) {
+    return;
+  }
+  try {
+    win.getUIContext().getPromptAction().showToast({
+      message: uiStatusText('Restored galleries: ' + count.toString())
+    });
+    win.getUIContext().getPromptAction().showDialog({
+      title: uiText('ZIP archives processed'),
+      message: uiStatusText('ZIP import summary: processed 1, skipped 0. Delete processed archives?'),
+      buttons: [
+        { text: uiText('Keep'), color: themeSecondaryText() },
+        { text: uiText('Delete'), color: themePrimaryColor() }
+      ]
+    }).then((data) => {
+      if (data.index === 1) {
+        ehDownloadFileStore.removeFiles([archivePath]);
+      }
+    }).catch(() => {});
+  } catch (error) {
+  }
+}
+
+function finishPublicDownload(context: common.UIAbilityContext, task: request.agent.Task, cachePath: string,
+  targetPath: string, completed: (progress: request.agent.Progress) => void,
+  failed: (progress: request.agent.Progress) => void): boolean {
+  const partPath = targetPath + '.part';
+  let saved = false;
+  try {
+    removeFileQuietly(partPath);
+    fs.copyFileSync(cachePath, partPath);
+    fs.moveFileSync(partPath, targetPath);
+    saved = true;
+    appLog.info(context, 'PublicDownload', 'Saved download tid=' + task.tid + ', target=' + targetPath);
+  } catch (error) {
+    removeFileQuietly(partPath);
+    appLog.error(context, 'PublicDownload', 'Saving public download failed tid=' + task.tid + ', target=' +
+      targetPath + ': ' + String(error));
+  } finally {
+    removeFileQuietly(cachePath);
+    releasePublicDownloadTask(task, completed, failed);
+  }
+  return saved;
+}
+
+function allocateArchiveNotificationId(): number {
+  nextArchiveNotificationId++;
+  if (nextArchiveNotificationId > 9999) {
+    nextArchiveNotificationId = ARCHIVE_NOTIFICATION_ID_BASE + 1;
+  }
+  return nextArchiveNotificationId;
+}
+
+function releasePublicDownloadTask(task: request.agent.Task,
+  completed: (progress: request.agent.Progress) => void,
+  failed: (progress: request.agent.Progress) => void): void {
+  try {
+    task.off('completed', completed);
+  } catch (error) {
+  }
+  try {
+    task.off('failed', failed);
+  } catch (error) {
+  }
+  const index = ACTIVE_PUBLIC_DOWNLOAD_TASKS.indexOf(task);
+  if (index >= 0) {
+    ACTIVE_PUBLIC_DOWNLOAD_TASKS.splice(index, 1);
+  }
+  request.agent.remove(task.tid).catch((_error: Error) => {
+  });
+}
+
+function removeFileQuietly(path: string): void {
+  try {
+    fs.unlinkSync(path);
+  } catch (error) {
+  }
+}
+
+function ensureDirectory(path: string): void {
+  try {
+    if (!fs.accessSync(path)) {
+      fs.mkdirSync(path, true);
+    }
+  } catch (error) {
+    throw new Error(String(error));
+  }
+}
+
+function uniqueDownloadPath(directory: string, fileName: string): string {
+  const dot = fileName.lastIndexOf('.');
+  const stem = dot > 0 ? fileName.substring(0, dot) : fileName;
+  const extension = dot > 0 ? fileName.substring(dot) : '';
+  let path = directory + '/' + fileName;
+  let suffix = 2;
+  while (pathExists(path)) {
+    path = directory + '/' + stem + ' (' + suffix.toString() + ')' + extension;
+    suffix++;
+  }
+  return path;
+}
+
+function pathExists(path: string): boolean {
+  try {
+    return fs.accessSync(path);
+  } catch (error) {
+    return false;
+  }
+}
+
+function sanitizeFileName(value: string): string {
+  let result = value.replace(/[\\/:*?"<>|]/g, '_').replace(/\s+/g, ' ').trim();
+  if (result.length === 0) {
+    result = 'EhViewer_archive.zip';
+  }
+  if (result.length > 180) {
+    const dot = result.lastIndexOf('.');
+    const extension = dot > 0 ? result.substring(dot) : '';
+    result = result.substring(0, Math.max(1, 180 - extension.length)).trim() + extension;
+  }
+  return result;
+}
