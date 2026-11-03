@@ -52,8 +52,9 @@ export struct ReaderStatusView {
           .backgroundColor(themeScrimColor())
           .borderRadius(this.iconSize() / 2)
       }
-      if (!this.compact || this.failed) {
-        Text(this.failed ? uiText('Image page failed to load') : uiText('Image page is loading'))
+      // 加载过程中不再显示文字提示：机主要求去掉底部那行「图片页面加载中」。
+      if (this.failed) {
+        Text(uiText('Image page failed to load'))
           .fontSize(16)
           .fontColor('#98A2B3')
       }

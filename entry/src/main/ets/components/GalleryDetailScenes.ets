@@ -108,6 +108,7 @@ export struct GalleryDetailOverlayScene {
   onHath: () => void = () => {};
   onSimilar: () => void = () => {};
   onSearchCover: () => void = () => {};
+  onBlockedAction: () => void = () => {};
   onCloseArchivePanel: () => void = () => {};
   onSelectArchiverOption: (option: ArchiverOption) => void = (_option: ArchiverOption) => {};
   onSelectHathOption: (option: ArchiveOption) => void = (_option: ArchiveOption) => {};
@@ -265,6 +266,7 @@ export struct GalleryDetailScene {
   onHath: () => void = () => {};
   onSimilar: () => void = () => {};
   onSearchCover: () => void = () => {};
+  onBlockedAction: () => void = () => {};
   onCloseArchivePanel: () => void = () => {};
   onSelectArchiverOption: (option: ArchiverOption) => void = (_option: ArchiverOption) => {};
   onSelectHathOption: (option: ArchiveOption) => void = (_option: ArchiveOption) => {};
@@ -384,6 +386,13 @@ export struct GalleryDetailScene {
 
   private startRating(): void {
     if (!this.isDetailLoaded || this.detail.apiUid < 0 || this.detail.apiKey.length === 0) {
+      // 以前这里直接 return，用户点下去毫无反应。这里自己弹窗，不再依赖上层回调，
+      // 避免中间某一层忘了透传就又没有反馈。
+      this.getUIContext().getPromptAction().showDialog({
+        title: uiText('Sign in required'),
+        message: uiText('Rating needs an E-Hentai account. Sign in from the side drawer, then come back.'),
+        buttons: [{ text: uiText('Got it'), color: themeAccentTextColor() }]
+      });
       return;
     }
     const current = this.detail.rated && this.detail.rating > 0 ? Math.round(this.detail.rating) : 5;
@@ -523,6 +532,7 @@ export struct GalleryDetailScene {
             .reuseId('detail-info')
             ListItem() {
               DetailActions({
+                onBlockedAction: this.onBlockedAction,
                 detail: this.detail,
                 isDetailLoaded: this.isDetailLoaded,
                 isFavorited: this.isFavorited,

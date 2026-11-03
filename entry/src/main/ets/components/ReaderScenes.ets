@@ -3146,7 +3146,7 @@ export struct ReaderScene {
       secondWidth: this.pageImageSize(index + 1)?.width ?? 0,
       secondHeight: this.pageImageSize(index + 1)?.height ?? 0,
       model: this.pairedImageModel,
-      statusText: index === this.pageIndex ? this.statusText : uiText('Image page is loading'),
+      statusText: index === this.pageIndex ? this.statusText : '',
       preferOriginal: this.preferOriginal,
       fitMode: this.fitMode,
       fixedScale: this.fixedScale,
@@ -3318,7 +3318,7 @@ export struct ReaderScene {
               // eslint-disable-next-line @performance/hp-arkui-use-reusable-component
               ReaderContinuousImageItem({
                 page: this.pageForIndex(item.index),
-                statusText: item.index === this.pageIndex ? this.statusText : uiText('Image page is loading'),
+                statusText: item.index === this.pageIndex ? this.statusText : '',
                 preferOriginal: this.preferOriginal,
                 fitMode: this.fitMode,
                 zoomScale: this.fixedScale,

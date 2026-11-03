@@ -34,3 +34,7 @@ Crash_*.dmp
 # IDE 索引配置，不进仓库
 .clangd
 .clang-tidy
+
+# local workspace data
+.workbuddy/
+check_locks.py

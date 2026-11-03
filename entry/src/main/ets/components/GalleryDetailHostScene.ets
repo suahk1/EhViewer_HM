@@ -1,3 +1,4 @@
+import { ehCookieStore } from '../services/EhCookieStore';
 import { common } from '@kit.AbilityKit';
 import { uniformTypeDescriptor as utd } from '@kit.ArkData';
 import { pasteboard } from '@kit.BasicServicesKit';
@@ -1149,8 +1150,21 @@ export struct GalleryDetailHostScene {
   }
 
   private openTorrentPanel(): void {
-    if (!this.detailLoaded || this.detail.torrentUrl.length === 0) {
+    // 详情页常能解析出种子数量、但取不到 torrent 链接；
+    // 只要数量大于 0 就继续走加载流程，由客户端用 gid/token 兜底拼出种子页。
+    if (!this.detailLoaded || (this.detail.torrentUrl.length === 0 && this.detail.torrentCount === 0)) {
       this.detailStatus = 'Torrent URL is unavailable';
+      // 分三种情况讲清楚，别把「没登录」和「这页真没种子」混成一句话。
+      if (!this.detailLoaded) {
+        this.showBlockedDialog(uiText('Torrents unavailable'),
+          uiText('The gallery is still loading. Please try again in a moment.'));
+      } else if (!ehCookieStore.hasCookies()) {
+        this.showBlockedDialog(uiText('Sign in to view torrents'),
+          uiText('E-Hentai only shows the torrent list to signed-in accounts. Sign in from the side drawer, then try again.'));
+      } else {
+        this.showBlockedDialog(uiText('No torrents for this gallery'),
+          uiText('This gallery has no torrent link on its page.'));
+      }
       this.renderVersion++;
       return;
     }
@@ -1220,10 +1234,21 @@ export struct GalleryDetailHostScene {
     const reason = archiveUnavailableReason(this.detailLoaded, this.detail);
     if (reason.length > 0) {
       this.detailStatus = reason;
+      this.showBlockedDialog(uiText('Sign in required'),
+        uiText('This action needs a signed-in E-Hentai account. Sign in from the side drawer, then come back.'));
       this.renderVersion++;
       return false;
     }
     return true;
+  }
+
+  // 统一的「点了但做不了」弹窗：说明原因，不再让按钮像坏的。
+  private showBlockedDialog(title: string, message: string): void {
+    this.getUIContext().getPromptAction().showDialog({
+      title: title,
+      message: message,
+      buttons: [{ text: uiText('Got it'), color: themeAccentTextColor() }]
+    });
   }
 
   private openArchiverPanel(): void {
@@ -1787,6 +1812,14 @@ export struct GalleryDetailHostScene {
         onHath: () => { this.openHathPanel(); },
         onSimilar: () => { this.openSimilarGalleryList(); },
         onSearchCover: () => { this.openCoverSearch(); },
+        // 未就绪的按钮被点：解释原因，别静默无反应。
+        onBlockedAction: () => {
+          this.getUIContext().getPromptAction().showDialog({
+            title: uiText(this.detailLoaded ? 'Sign in required' : 'Still loading'),
+            message: uiText(this.detailLoaded ? 'This action needs a signed-in account.' : 'The gallery is still loading. Please try again in a moment.'),
+            buttons: [{ text: uiText('Got it'), color: themeAccentTextColor() }]
+          });
+        },
         onCloseArchivePanel: () => { this.closeArchivePanel(); },
         onSelectArchiverOption: (option: ArchiverOption) => { this.submitArchiverOption(option); },
         onSelectHathOption: (option: ArchiveOption) => { this.submitHathOption(option); },

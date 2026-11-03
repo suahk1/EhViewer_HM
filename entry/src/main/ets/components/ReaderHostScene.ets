@@ -1003,12 +1003,8 @@ export struct ReaderSessionScene {
         return;
       }
       if (imagePath.length === 0) {
-        // 图片还没落到本地时无法识别，不再静默返回：给一次提示，
-        // 并在图片缓存完成后由 applyCachedReaderPage 补一次重试。
-        if (index === this.pageIndex && !force) {
-          this.setComicTranslationNotice('Page image is not ready for translation');
-          this.traceReaderTranslation(index, '页面图片尚未落盘（cachedImagePath 与 cachedOriginImagePath 均为空）');
-        }
+        // 图片未落盘时静默跳过：不再弹「页面图片尚未就绪」。
+        // 图片缓存完成后由 applyCachedReaderPage 自动补一次翻译，用户无需感知。
         if (force) {
           this.finishReaderTranslationRefresh(index);
         }

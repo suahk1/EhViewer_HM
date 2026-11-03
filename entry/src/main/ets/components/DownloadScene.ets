@@ -2616,7 +2616,9 @@ export struct DownloadScene {
           })
           .animation({ duration: 220, curve: Curve.EaseOut })
           .transition(TransitionEffect.OPACITY.animation({ duration: 160, curve: Curve.EaseInOut }))
-        }, (item: DownloadInfo) => item.gid.toString())
+        // key 必须唯一到「一条下载记录」。只用 gid 时，同画廊的多条记录 key 重复，
+      // 删除一条后 ForEach 会复用错节点，表现为缩略图与实际图册不匹配。
+      }, (item: DownloadInfo) => item.gid.toString() + ':' + item.time.toString() + ':' + item.label)
       }
     }
     .width('100%')
@@ -2665,7 +2667,9 @@ export struct DownloadScene {
         })
         .animation({ duration: 220, curve: Curve.EaseOut })
         .transition(TransitionEffect.OPACITY.animation({ duration: 160, curve: Curve.EaseInOut }))
-      }, (item: DownloadInfo) => item.gid.toString())
+      // key 必须唯一到「一条下载记录」。只用 gid 时，同画廊的多条记录 key 重复，
+      // 删除一条后 ForEach 会复用错节点，表现为缩略图与实际图册不匹配。
+      }, (item: DownloadInfo) => item.gid.toString() + ':' + item.time.toString() + ':' + item.label)
     }
     .columnsTemplate(this.downloadWaterFlowColumnsTemplate())
     .columnsGap(this.downloadCardGap())

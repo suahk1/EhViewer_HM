@@ -127,6 +127,15 @@ export function galleryThumbnailAspectRatio(gallery: GalleryInfo): number {
 @Reusable
 export struct GalleryListRow {
   @Prop gallery: GalleryInfo = createEmptyGallery();
+
+  // 复用节点时必须接收新的数据。缺这个方法时，列表删除一条后
+  // 后续卡片会沿用上一条的缩略图与标题，表现为「图和实际图册不匹配」。
+  aboutToReuse(params: Record<string, Object>): void {
+    const next = params.gallery;
+    if (next !== undefined) {
+      this.gallery = next as GalleryInfo;
+    }
+  }
   @Prop selected: boolean = false;
   @Prop translateTitle: boolean = false;
   @Prop translationPriority: number = 2;
@@ -798,6 +807,15 @@ export struct GalleryThumb {
 @Reusable
 export struct GalleryThumbCard {
   @Prop @Watch('onGalleryChange') gallery: GalleryInfo = createEmptyGallery();
+
+  // 同 GalleryListRow：复用后必须换数据并重算宽高比，否则缩略图会串到下一条。
+  aboutToReuse(params: Record<string, Object>): void {
+    const next = params.gallery;
+    if (next !== undefined) {
+      this.gallery = next as GalleryInfo;
+    }
+    this.syncThumbnailAspectRatio();
+  }
   @Prop selected: boolean = false;
   @Prop translateTitle: boolean = false;
   @Prop translationPriority: number = 2;

@@ -1764,6 +1764,51 @@ export function zhText(text: string): string {
     case 'Bypass SNI blocking using built-in host fronting; restart the app after changing':
       return '用内置 hosts 绕过 SNI 封锁；修改后需重启应用生效';
     case 'Sign in to see subscriptions': return '登录后查看订阅';
+    case 'This action needs a signed-in account': return '这个操作需要登录账号';
+    case 'Still loading the gallery, try again in a moment': return '画廊还在加载，请稍等一下再点';
+    case 'Loading gallery pages...': return '正在加载画廊页面…';
+    case 'Slow networks can take 10 seconds or more': return '网络慢时可能需要十几秒';
+
+    case 'Opening reader': return '正在打开阅读器';
+    case 'Cannot open this panel': return '这个面板打不开';
+    case 'Sign in first': return '请先登录';
+    case 'Support development': return '支持开发';
+    case 'scan the code': return '扫码';
+    case 'Thanks for using the HarmonyOS build. No ads, no tricks. If this app saved you some time, you can':
+      return '感谢使用鸿蒙版 EH！纯个人用爱发电，无广告无套路。如果你觉得这版丝滑好用，或者帮你省下了折腾的时间，可以';
+    case 'to buy me a drink.': return '让我植发计划提前开展。';
+    case 'Buy me a coffee': return '请开发者喝杯咖啡';
+    case 'Thanks for using the HarmonyOS build. No ads, no tricks. If this app saved you some time, you can buy me a drink.':
+      return '感谢使用鸿蒙版 EH！纯个人用爱发电，无广告无套路。如果你觉得这版丝滑好用，或者帮你省下了折腾的时间，可以扫码请我喝杯肥宅水。';
+    case 'One-off tip, not a subscription.': return '（注：单次打赏，非订阅扣费）';
+    case 'Tier gags':
+      return '选 1 元买个创可贴，选 5 元买瓶快乐水，选 10 元泡面加根肠，选 100 元……直接认作赛博义父！';
+    case 'This app is a local reader only and ships no content. Tips are voluntary.':
+      return '本应用仅为本地阅读工具，不提供任何内容。赞赏纯属自愿，感谢您的支持。';
+    case 'Save to album': return '保存到相册';
+    case 'Saved to album': return '已保存到相册';
+    case 'Save failed': return '保存失败';
+    case 'Could not open WeChat.': return '没能打开微信';
+
+    case 'Scan with WeChat, or save the image and pick it from your album.':
+      return '用微信扫一扫；或截图保存后，从微信扫一扫的相册里选择。';
+    case 'Open WeChat': return '打开微信';
+    case 'Could not open WeChat. Open WeChat and use Scan from album.':
+      return '没能直接打开微信，请手动打开微信，用扫一扫从相册选择。';
+    case 'Close': return '关闭';
+
+    case 'Archive needs a loaded gallery': return '画廊还没加载完';
+    case 'This action needs a signed-in E-Hentai account.': return '这个操作需要登录 E-Hentai 账号。';
+
+    case 'Torrents unavailable': return '没有可用的种子';
+    case 'Sign in to view torrents': return '登录后才能看种子';
+    case 'E-Hentai only shows the torrent list to signed-in accounts. Sign in from the side drawer, then try again.':
+      return 'E-Hentai 的种子列表只对登录用户开放。请在左侧抽屉登录后再试。';
+    case 'No torrents for this gallery': return '这个画廊没有种子';
+    case 'This gallery has no torrent link on its page.': return '这个画廊的页面上没有种子链接。';
+
+    case 'No torrent link was found on this gallery page. It usually needs a signed-in account.':
+      return '这一页没有找到种子链接。通常需要登录账号才能看到。';
     case 'Sign in required': return '需要登录';
     case 'Rating needs an E-Hentai account. Sign in from the side drawer, then come back.':
       return '评分需要 E-Hentai 账号。请在左侧抽屉的「账号与登录」完成登录后再试。';

@@ -933,8 +933,10 @@ export class EhHttpClient {
 
   async loadTorrentList(torrentUrl: string, gid: number, token: string,
     site: GallerySite = GallerySite.E): Promise<TorrentListLoadResult> {
+    // 详情页解析不到种子链接时，退化为直接请求画廊页的种子列表视图。
     if (torrentUrl.length === 0) {
-      return { ok: false, url: torrentUrl, statusCode: 0, message: 'Torrent URL is unavailable', torrents: [] };
+      const base = EhUrl.getGalleryDetailUrl(gid, token, 0, false, site);
+      torrentUrl = base + (base.indexOf('?') >= 0 ? '&' : '?') + 'torrent=1';
     }
     try {
       const response = await this.getText(torrentUrl, EhUrl.getGalleryDetailUrl(gid, token, 0, false, site), 0);
@@ -948,6 +950,8 @@ export class EhHttpClient {
         };
       }
       const torrents = parseTorrentList(response.body);
+      console.info('[torrent] url=' + torrentUrl + ' status=' + response.statusCode +
+        ' bodyLen=' + response.body.length + ' parsed=' + torrents.length);
       return {
         ok: torrents.length > 0,
         url: torrentUrl,

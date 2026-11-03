@@ -149,6 +149,7 @@ import { EhBackupBundle, SessionMode, SettingsRowItem, SettingsPanel, SETTINGS_H
 import { FilterPanel } from './FilterPanel';
 import { BlockingBusyOverlay } from './BlockingBusyOverlay';
 import { ConfirmActionOverlay } from './ConfirmActionOverlay';
+import { DonateOverlay } from './DonateOverlay';
 import { ResultOverlay } from './ResultOverlay';
 import { MyTagsPanel } from './MyTagsPanel';
 import { ReaderPresetPanel } from './ReaderPresetPanel';
@@ -287,6 +288,7 @@ export struct SettingsScene {
   @State activeSplitPane: string = SPLIT_PANE_FOCUS_LEFT;
   @State restorePanelWithFade: boolean = false;
   @State updateDialogVisible: boolean = false;
+  @State donateVisible: boolean = false;
   @State updateCurrentVersion: string = '';
   @State updateRelease: ReleaseInfo | null = null;
   @State sessionInitialMode: SessionMode = SessionMode.Password;
@@ -939,24 +941,32 @@ export struct SettingsScene {
     }
     // 诊断用：确认点击是否进到这里、动作有没有被消费、有没有可选项。
     // 排查「点了没反应」时先看 hilog 里有没有这行。
+    const statusBefore = this.statusText;
     const actionHandled = this.runSettingAction(row.key);
     console.info('[SettingsTap] key=' + row.key + ' type=' + row.type +
       ' options=' + (row.options === undefined ? -1 : row.options.length) +
       ' action=' + actionHandled);
     if (actionHandled) {
+      // 多数 action 只把结果写进 statusText，而这个字段在界面上没有渲染位置，
+      // 表现为「点了没反应」。这里统一把新产生的状态提示出来。
+      if (this.statusText !== statusBefore && this.statusText.length > 0) {
+        this.showToast(this.statusText);
+      }
       return;
     }
     if (row.type === 'model') {
       this.openTranslationModelPicker(row);
       return;
     }
+    // 开关行没有 options，若先判 options 就会被“暂不可用”吃掉，永远切不动。
+    if (row.type === 'switch') {
+      this.saveSettingValue(row.key, row.value === 'On' ? 'Off' : 'On');
+      return;
+    }
     if (row.options === undefined || row.options.length === 0) {
       console.info('[SettingsTap] no options, showing status only: ' + row.key);
       this.statusText = row.title + ' is not available yet';
-      return;
-    }
-    if (row.type === 'switch') {
-      this.saveSettingValue(row.key, row.value === 'On' ? 'Off' : 'On');
+      this.showToast(this.statusText);
       return;
     }
     this.openOptionPicker(row);
@@ -1251,11 +1261,8 @@ export struct SettingsScene {
       return true;
     }
     if (key === 'donate') {
-      if (EH_DONATE_URL.length === 0) {
-        this.showResult('Donate', uiText('Donation channel is not configured yet'));
-        return true;
-      }
-      this.openExternalUrl(EH_DONATE_URL, 'donation');
+      // 赞赏码直接弹层展示，支持一键拉起微信扫一扫。
+      this.donateVisible = true;
       return true;
     }
     if (key === 'dump_logcat') {
@@ -2927,6 +2934,18 @@ export struct SettingsScene {
         })
           .zIndex(SPLIT_PANE_MODAL_Z_INDEX)
           .transition(TransitionEffect.OPACITY.animation({ duration: 180, curve: Curve.EaseOut }))
+      }
+
+      if (this.donateVisible) {
+        DonateOverlay({
+          onClose: () => {
+            this.donateVisible = false;
+          }
+        })
+          .width(this.settingsLayerWidth())
+          .height('100%')
+          .position({ x: this.settingsLayerTranslateX(), y: 0 })
+          .zIndex(30)
       }
 
       if (this.resultVisible) {

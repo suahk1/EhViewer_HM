@@ -59,7 +59,11 @@ import {
   runDetailBackHandler
 } from '../shared/AppRuntime';
 import {
+  themeAccentTextColor,
   themePageBackground,
+  themePrimaryText,
+  themeSecondaryText,
+  themeSurfaceVariant,
 } from '../shared/AppPalette';
 import {
   uiDialogBlurOptions,
@@ -280,6 +284,7 @@ export struct GalleryListScene {
   @State searchSubmitted: boolean = false;
   @State showDetail: boolean = false;
   @State showReader: boolean = false;
+  // 点缩略图后立刻铺一层占位，避免加载详情那几秒里「点了没反应」。
   @State sceneContentWidth: number = 0;
   @State splitListRatio: number = splitPaneCurrentRatio();
   @State splitDragging: boolean = false;
@@ -1923,7 +1928,6 @@ export struct GalleryListScene {
     this.openDetailLink(detailLink);
   }
 
-  // 点封面缩略图直接进入阅读器：已下载读本地，未下载先加载详情再进阅读器。
   private openReaderDirectly(gallery: GalleryInfo): void {
     if (gallery.gid <= 0 || gallery.token.length === 0) {
       this.statusText = 'Read needs a loaded gallery';
@@ -1948,7 +1952,7 @@ export struct GalleryListScene {
     this.renderVersion++;
     loadGalleryDetailModule(this.client, detailLink).then((result: GalleryDetailModuleLoadResult) => {
       if (!result.ok) {
-        this.statusText = result.statusText;
+          this.statusText = result.statusText;
         this.renderVersion++;
         return;
       }
@@ -2041,7 +2045,36 @@ export struct GalleryListScene {
     this.detailScrollOffset = 0;
   }
 
+  // 详情页取消收藏后返回，收藏页的列表是自己缓存的一份数据，
+  // 不会跟着本地收藏库变化，于是出现「心标没了、条目还在」的错位。
+  // 返回列表时按当前收藏库过滤一次，代价很小。
+  private pruneRemovedLocalFavorites(): void {
+    if (this.sourceRoute !== GalleryRoute.Favorites || this.isSearchResultScene) {
+      return;
+    }
+    if (this.galleries.length === 0) {
+      return;
+    }
+    const alive: Set<number> = new Set<number>();
+    const items = ehLocalFavoritesStore.getItems('');
+    for (let i = 0; i < items.length; i++) {
+      alive.add(items[i].gid);
+    }
+    const kept: GalleryInfo[] = [];
+    for (let i = 0; i < this.galleries.length; i++) {
+      if (alive.has(this.galleries[i].gid)) {
+        kept.push(this.galleries[i]);
+      }
+    }
+    if (kept.length !== this.galleries.length) {
+      this.galleries = kept;
+      this.favoriteLocalCount = ehLocalFavoritesStore.count();
+      this.renderVersion++;
+    }
+  }
+
   private closeDetail(): void {
+    this.pruneRemovedLocalFavorites();
     this.restoreDetailWithFade = false;
     this.activeSplitPane = SPLIT_PANE_FOCUS_LEFT;
     this.searchResultDetailOpened = false;
