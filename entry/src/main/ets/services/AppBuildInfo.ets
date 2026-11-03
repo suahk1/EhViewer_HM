@@ -1,7 +1,7 @@
 // 必须与 AppScope/app.json5 的 versionName / versionCode 保持一致。
 // 改版本要同时改两处：app.json5 的 versionName / versionCode 与这里必须一致。
-export const APP_VERSION_NAME: string = '0.1.4';
-export const APP_VERSION_CODE: number = 100104;
+export const APP_VERSION_NAME: string = '0.1.5';
+export const APP_VERSION_CODE: number = 100105;
 export const TARGET_PLATFORM: string = 'HarmonyOS 26.0.0 / compatible API 6.0.0(20)';
 // 制作者信息：应用由 IFSM 维护，上游为 EhViewer（Android）开源项目。
 export const APP_AUTHOR_NAME: string = 'IFSM';

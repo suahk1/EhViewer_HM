@@ -1533,10 +1533,10 @@ export function zhText(text: string): string {
     case 'Direct connection unavailable, domain fronting enabled': return '无法直接访问，开启域名前置';
     case 'Account, site, gallery list and comments': return '账号、站点、画廊列表和评论';
     case 'Account, site, filters and comments': return '账号、站点、筛选和评论';
-    case 'Theme, language and gallery list display': return '主题、语言与画廊列表显示';
+    case 'Theme and gallery list display': return '主题与画廊列表显示';
     case 'Lock, backup, cache and cleanup': return '锁定、备份、缓存与清理';
     case 'Proxy, DNS, hosts and diagnostics': return '代理、DNS、hosts 与诊断';
-    case 'Smart grip, logs and debug output': return '智感握持、日志与调试输出';
+    case 'Language, smart grip, logs and debug output': return '语言、智感握持、日志与调试输出';
     case 'Merge duplicate records and folders, then delete folders no record points to': return '合并重复记录和目录，再删除没有任何记录指向的目录';
     case 'Reader direction, scaling and screen behavior': return '阅读方向、缩放和屏幕行为';
     case 'Location, threads, preload and cleanup': return '位置、线程、预加载和清理';

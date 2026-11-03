@@ -195,13 +195,13 @@ export const DRAWER_ITEMS: DrawerItem[] = [
 
 export const SETTINGS_HEADERS: SettingsHeaderItem[] = [
   { panel: SettingsPanel.Eh, title: 'EH', icon: 'E', summary: 'Account, site, filters and comments' },
-  { panel: SettingsPanel.Ui, title: 'Interface', icon: 'U', summary: 'Theme, language and gallery list display' },
+  { panel: SettingsPanel.Ui, title: 'Interface', icon: 'U', summary: 'Theme and gallery list display' },
   { panel: SettingsPanel.Read, title: 'Read', icon: 'R', summary: 'Reader direction, scaling and screen behavior' },
   { panel: SettingsPanel.Download, title: 'Download', icon: 'D', summary: 'Location, threads, preload and cleanup' },
   { panel: SettingsPanel.Translation, title: 'Translation', icon: 'T', summary: 'Title and comment translation providers' },
   { panel: SettingsPanel.Privacy, title: 'Privacy and data', icon: 'P', summary: 'Lock, backup, cache and cleanup' },
   { panel: SettingsPanel.Network, title: 'Network', icon: 'N', summary: 'Proxy, DNS, hosts and diagnostics' },
-  { panel: SettingsPanel.Advanced, title: 'Advanced', icon: 'A', summary: 'Smart grip, logs and debug output' },
+  { panel: SettingsPanel.Advanced, title: 'Advanced', icon: 'A', summary: 'Language, smart grip, logs and debug output' },
   { panel: SettingsPanel.About, title: 'About', icon: 'I', summary: 'Version and license' }
 ];
 
