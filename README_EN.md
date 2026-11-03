@@ -21,7 +21,7 @@ English · [简体中文](README.md)
 
 EhViewer HM is a HarmonyOS port of the Android EhViewer app, rewritten in ArkTS / ArkUI. One codebase covers phones, foldables, tablets and desktop windows.
 
-Current version: `0.1.5`. This app is a client only and hosts no content. Check the laws of your region and the terms of service of the sites you use.
+Current version: `0.1.0`. This app is a client only and hosts no content. Check the laws of your region and the terms of service of the sites you use.
 
 ## Features
 
@@ -83,13 +83,30 @@ Three things to know before starting:
 
 ## Installation
 
-Download the hap for the version you want from Releases (file name includes the version, e.g. `EhViewer_HM_0.1.5.hap`) and install with a debug assistant or `hdc install`.
+Download the latest HAP from [GitHub Releases](https://github.com/suahk1/EhViewer_HM/releases) and install it with [Xiaobai Debug Assistant](https://github.com/likuai2010/auto-installer). No HDC and no cable required.
+
+- Current version: `0.1.0`
+- Package: `EhViewer_HM_0.1.0.hap`
+- Target API: `26.0.0`
+- Compatible API: `6.0.0(20)`
+
+Xiaobai Debug Assistant: keep the phone and the computer on the same LAN, start the assistant on the computer, approve the pairing prompt on the phone, then drag the HAP into the window.
+
+Alternatively use the developer channel:
+
+```bash
+hdc install EhViewer_HM_0.1.0.hap
+```
+
+Installing over an existing build keeps app data; uninstalling clears sign-in state, downloads and reading progress.
+
+The system ships no HAP installer, so tapping a HAP on the phone does nothing. The in-app update check only reports a newer version and points to the download; it does not install anything.
 
 | Item | Value |
 | :--- | :--- |
 | Target API | 26.0.0 |
 | Minimum API | 20 |
-| Install size | about 16 MB |
+| Install size | about 18 MB |
 
 ## Building
 

@@ -19,7 +19,7 @@
 
 EhViewer HM 是 Android 版 EhViewer 的鸿蒙移植版本，用 ArkTS / ArkUI 重写，一套代码适配手机、折叠屏、平板与电脑窗口。
 
-当前版本：`0.1.5`。本应用仅为客户端，不提供、不托管任何内容；使用前请确认所在地区的法律法规与目标网站的服务条款。
+当前版本：`0.1.0`。本应用仅为客户端，不提供、不托管任何内容；使用前请确认所在地区的法律法规与目标网站的服务条款。
 
 ## 功能
 
@@ -81,13 +81,30 @@ EhViewer HM 是 Android 版 EhViewer 的鸿蒙移植版本，用 ArkTS / ArkUI �
 
 ## 安装
 
-在 Releases 下载对应版本的 hap（文件名带版本号，如 `EhViewer_HM_0.1.5.hap`），用调试助手或 `hdc install` 安装。
+请在 [GitHub Releases](https://github.com/suahk1/EhViewer_HM/releases) 下载最新的 HAP，使用 [小白调试助手](https://github.com/likuai2010/auto-installer) 安装，无需 HDC 与数据线。
+
+- 当前版本：`0.1.0`
+- 安装包：`EhViewer_HM_0.1.0.hap`
+- 目标 API：`26.0.0`
+- 兼容 API：`6.0.0(20)`
+
+小白调试助手：手机与电脑连接同一局域网，在电脑上启动助手，手机端确认配对，把 HAP 拖入窗口即开始安装。
+
+也可以走开发者通道：
+
+```bash
+hdc install EhViewer_HM_0.1.0.hap
+```
+
+覆盖安装保留应用数据；卸载重装会清空登录状态、下载记录与阅读进度。
+
+系统未提供 HAP 安装器，直接在手机上点击 HAP 无法安装；应用内「检查更新」只提示新版本并给出下载入口，不提供自动安装。
 
 | 项 | 要求 |
 | :--- | :--- |
 | 目标 API | 26.0.0 |
 | 最低 API | 20 |
-| 安装体积 | 约 16 MB |
+| 安装体积 | 约 18 MB |
 
 ## 构建
 

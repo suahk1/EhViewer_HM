@@ -616,11 +616,14 @@ struct Index {
       }
 
       // 展开面板的点击遮罩：铺满整屏，点任意位置收起，不改变页面状态。
+      // 遮罩必须是可命中区域：完全透明的容器在部分版本上收不到点击，
+      // 用 1% 不透明度 + Block 命中模式，保证点外部任何位置都能收起。
       if (this.dockMoreVisible) {
-        Column()
+        Stack()
           .width('100%')
           .height('100%')
-          .backgroundColor(Color.Transparent)
+          .backgroundColor('#01FFFFFF')
+          .hitTestBehavior(HitTestMode.Block)
           .onClick(() => {
             this.dockMoreVisible = false;
           })

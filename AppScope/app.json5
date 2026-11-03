@@ -2,8 +2,8 @@
   "app": {
     "bundleName": "com.ifsm.ehviewer",
     "vendor": "IFSM",
-    "versionCode": 100105,
-    "versionName": "0.1.5",
+    "versionCode": 100100,
+    "versionName": "0.1.0",
     "icon": "$media:app_icon",
     "label": "$string:app_name"
   }
