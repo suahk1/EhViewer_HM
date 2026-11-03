@@ -79,6 +79,7 @@ import {
   startEhFrontingBenchmark,
 } from '../services/NetworkConfig';
 import { EhUrl } from '../services/EhUrl';
+import { downloadUpdateHap, installHap, shareHap } from '../services/UpdateInstaller';
 import { releaseUpdateChecker, ReleaseInfo, UpdateCheckResult } from '../services/ReleaseUpdateChecker';
 import {
   ehTagTranslationStore,
@@ -1529,6 +1530,42 @@ export struct SettingsScene {
       this.statusText = 'Check for updates failed: ' + errorText(error);
       this.showResult('Check for updates', this.statusText);
     });
+  }
+
+  // 直接覆盖安装：应用内下载 hap，再拉起系统安装器。
+  // 浏览器打开直链只会下载文件，装不上，所以不能再跳网页。
+  private async startUpdateInstall(): Promise<void> {
+    const release = this.updateRelease;
+    if (release === null || release.hapDownloadUrl.length === 0) {
+      this.showFloatingStatus(uiText('Update download link is unavailable'));
+      return;
+    }
+    const url = release.hapDownloadUrl;
+    const slash = url.lastIndexOf('/');
+    const fileName = slash >= 0 ? url.substring(slash + 1) : 'update.hap';
+    this.blockingBusyVisible = true;
+    this.blockingBusyMessage = uiText('Downloading update');
+    this.blockingBusyProgressText = '';
+    this.blockingBusyProgressCurrent = 0;
+    this.blockingBusyProgressTotal = 0;
+    const result = await downloadUpdateHap(url, fileName, (received: number, total: number) => {
+      this.blockingBusyProgressCurrent = received;
+      this.blockingBusyProgressTotal = total > 0 ? total : 0;
+      this.blockingBusyProgressText = downloadSizeText(received);
+    });
+    this.blockingBusyVisible = false;
+    if (!result.ok) {
+      this.statusText = result.message;
+      this.showResult('Install update', result.message);
+      return;
+    }
+    if (installHap(result.path)) {
+      this.statusText = uiText('Installer opened');
+      return;
+    }
+    // 系统没有可用的安装器时，退回分享，让用户自己交给文件管理器
+    this.statusText = result.path;
+    await shareHap(result.path);
   }
 
   private exportAppLog(): void {
@@ -3006,11 +3043,8 @@ export struct SettingsScene {
             this.updateDialogVisible = false;
           },
           onUpdate: () => {
-            const release = this.updateRelease;
             this.updateDialogVisible = false;
-            if (release !== null) {
-              this.openExternalUrl(release.hapDownloadUrl, 'latest HAP');
-            }
+            this.startUpdateInstall();
           }
         })
           .zIndex(SPLIT_PANE_MODAL_Z_INDEX)
