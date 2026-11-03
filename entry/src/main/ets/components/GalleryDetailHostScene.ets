@@ -1223,15 +1223,15 @@ export struct GalleryDetailHostScene {
     if (meta.hash.length === 40) {
       copied = 'magnet:?xt=urn:btih:' + meta.hash + '&dn=' + encodeURIComponent(name);
       for (const tr of meta.trackers) {
-        copied += '&tr=' + encodeURIComponent(tr);
-        // EH 域名在部分网络被 DNS 污染，客户端解析不到 ehtracker.org 就会一直"解析中"。
-        // 实测 tracker 支持裸 IP 直连（不带 Host 头也正常返回 announce），补一条同路径的 IP 版。
+        // IP 版放在最前：客户端解析不到 ehtracker.org 时若先试域名，会卡在超时上不再回退。
+        // 实测 tracker 支持裸 IP 直连（不带 Host 头也正常返回 announce）。
         if (tr.indexOf('ehtracker.org') >= 0) {
           const ipTracker = tr.replace(/^https?:\/\/ehtracker\.org/, 'http://' + EHTRACKER_IP);
           if (ipTracker !== tr) {
             copied += '&tr=' + encodeURIComponent(ipTracker);
           }
         }
+        copied += '&tr=' + encodeURIComponent(tr);
       }
     } else {
       copied = absolute;
