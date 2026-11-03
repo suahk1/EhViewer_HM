@@ -1,5 +1,5 @@
 import { ehCookieStore } from '../services/EhCookieStore';
-import { common } from '@kit.AbilityKit';
+import { common, Want, wantConstant } from '@kit.AbilityKit';
 import { uniformTypeDescriptor as utd } from '@kit.ArkData';
 import { pasteboard } from '@kit.BasicServicesKit';
 import { fileIo as fs, fileUri, picker } from '@kit.CoreFileKit';
@@ -1249,6 +1249,64 @@ export struct GalleryDetailHostScene {
       console.error('[torrent] copy failed ' + String(error));
       this.showToast('Copy failed');
     }
+    // 磁力解析元数据要靠连 peer，成不成看运气；种子文件里已写死文件列表，
+    // 直接交给客户端打开就是确定的。落盘后用 file URI + viewData 拉起。
+    const savedPath = this.saveTorrentFile(bytes, name);
+    if (savedPath.length > 0) {
+      this.handTorrentToClient(savedPath);
+    }
+  }
+
+  // 存到公共下载目录（没有配置时退回应用目录）：公共路径是普通文件路径，
+  // 迅雷 / 文件管理都能直接打开，不受应用沙箱 URI 的限制。
+  private saveTorrentFile(bytes: ArrayBuffer, name: string): string {
+    try {
+      const context = getAbilityContext();
+      if (context === undefined) {
+        return '';
+      }
+      let root = '';
+      try {
+        root = ehDownloadFileStore.publicDownloadRoot(context);
+      } catch (error) {
+        root = context.filesDir + '/torrents';
+      }
+      const dir = root.endsWith('/torrents') ? root : root + '/torrents';
+      if (!fs.accessSync(dir)) {
+        fs.mkdirSync(dir);
+      }
+      const safe = name.replace(/[\\/:*?"<>|]/g, '_');
+      const fileName = safe.toLowerCase().endsWith('.torrent') ? safe : safe + '.torrent';
+      const target = dir + '/' + fileName;
+      const file = fs.openSync(target, fs.OpenMode.CREATE | fs.OpenMode.READ_WRITE | fs.OpenMode.TRUNC);
+      fs.writeSync(file.fd, bytes);
+      fs.closeSync(file);
+      console.info('[torrent] saved ' + target);
+      return target;
+    } catch (error) {
+      console.warn('[torrent] save failed ' + String(error));
+      return '';
+    }
+  }
+
+  // 直接把种子文件交给迅雷（其 module 声明了 file scheme + application/x-bittorrent）
+  private handTorrentToClient(path: string): void {
+    const context = getAbilityContext();
+    if (context === undefined) {
+      return;
+    }
+    const want: Want = {
+      bundleName: 'com.xunlei.thunder',
+      action: 'ohos.want.action.viewData',
+      uri: fileUri.getUriFromPath(path),
+      type: 'application/x-bittorrent',
+      flags: wantConstant.Flags.FLAG_AUTH_READ_URI_PERMISSION
+    };
+    context.startAbility(want).then(() => {
+      console.info('[torrent] handed to client');
+    }).catch((error: Error) => {
+      console.warn('[torrent] hand off failed ' + error.message);
+    });
   }
 
   // 把 .torrent 写进下载目录下的 torrents/，供迅雷等客户端直接打开（本地解析，不走网络）
