@@ -1,5 +1,4 @@
 import { http } from '@kit.NetworkKit';
-import { BusinessError } from '@kit.BasicServicesKit';
 import { FormField, buildFormBody } from './FormBody';
 import { fileIo as fs } from '@kit.CoreFileKit';
 import {
@@ -932,37 +931,58 @@ export class EhHttpClient {
     return this.loadGalleryPageFast(pageUrl, site, referer, true);
   }
 
-  // 直接取 .torrent 文件本体：外部客户端拿不到 Cookie，只有应用内下载才能取到 ex 站的种子
+  // 直接取 .torrent 文件本体：外部客户端拿不到 Cookie，只有应用内下载才能取到 ex 站的种子。
+  // 必须走与文本请求相同的管线（fronting/hosts/准入/重试）：裸 http 直连在需要前置的
+  // 网络下会超时（ehtracker.org 不在内置 hosts 表里，直连超时 2300028 实测）。
   async fetchTorrentBytes(url: string): Promise<ArrayBuffer | null> {
-    let request: http.HttpRequest | null = null;
-    try {
-      request = http.createHttp();
-      const response = await request.request(url, {
-        method: http.RequestMethod.GET,
-        header: {
-          'Cookie': ehCookieStore.getCookieHeaderForUrl(url),
-          'Referer': EhUrl.getReferer(),
-          'User-Agent': ANDROID_CHROME_USER_AGENT
-        },
-        expectDataType: http.HttpDataType.ARRAY_BUFFER,
-        connectTimeout: 20000,
-        readTimeout: 60000
-      });
-      const statusCode = Number(response.responseCode);
-      if (statusCode !== 200) {
-        console.warn('[torrent] file http ' + statusCode + ' url=' + url);
-        return null;
-      }
-      return response.result as ArrayBuffer;
-    } catch (error) {
-      const err = error as BusinessError;
-      console.warn('[torrent] file fetch failed code=' + err.code + ' msg=' + err.message + ' url=' + url);
-      return null;
-    } finally {
-      if (request !== null) {
-        request.destroy();
+    for (let attempt = 0; attempt < 3; attempt++) {
+      let request: http.HttpRequest | null = null;
+      let plan: EhRequestPlan | null = null;
+      let admission: EhRequestAdmission | null = null;
+      await acquireTextSlot();
+      try {
+        plan = createEhRequestPlan(url);
+        const header = buildRequestHeader(plan, EhUrl.getReferer(),
+          ehCookieStore.getCookieHeaderForUrl(url), 0);
+        await ensureEhHostRules();
+        admission = await acquireEhRequestAdmission(plan, 50);
+        request = acquireHttpRequest();
+        const options: http.HttpRequestOptions = {
+          method: http.RequestMethod.GET,
+          header: header,
+          expectDataType: http.HttpDataType.ARRAY_BUFFER,
+          connectTimeout: frontingTimeout(plan, 20000, url + '|torrent-connect', 350),
+          readTimeout: frontingTimeout(plan, 60000, url + '|torrent-read', 1200)
+        };
+        applyEhNetworkOptions(options, plan);
+        if (plan.fronted) {
+          markHttpRequestVolatile(request);
+        }
+        const response = await requestToCompletion(request, plan.url, options);
+        const statusCode = Number(response.responseCode);
+        if (statusCode !== 200) {
+          console.warn('[torrent] file http ' + statusCode + ' url=' + url);
+          return null;
+        }
+        const bytes = response.result as ArrayBuffer;
+        console.info('[torrent] file fetched bytes=' + bytes.byteLength + ' url=' + url);
+        return bytes;
+      } catch (error) {
+        const message = readableErrorMessage(error);
+        console.warn('[torrent] file fetch failed ' + message + ' url=' + url);
+        if (attempt + 1 >= 3 || !isTransientError(message)) {
+          return null;
+        }
+        await sleepRetry(attempt);
+      } finally {
+        if (request !== null) {
+          retireHttpRequest(request);
+        }
+        releaseEhRequestAdmission(admission);
+        releaseTextSlot();
       }
     }
+    return null;
   }
 
   async loadTorrentList(torrentUrl: string, gid: number, token: string,

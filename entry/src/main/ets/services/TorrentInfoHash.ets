@@ -81,29 +81,77 @@ async function sha1Hex(bytes: Uint8Array): Promise<string> {
   return hex;
 }
 
-// 返回 40 位小写 info_hash；解析失败返回空串
-export async function extractInfoHash(bytes: ArrayBuffer): Promise<string> {
+// 返回 40 位小写 info_hash + 种子内声明的 tracker 列表；解析失败 hash 为空串
+export class TorrentMeta {
+  hash: string = '';
+  trackers: string[] = [];
+}
+
+// 读位于 pos 的 bencode 字符串原文（含引号外的原始字节）
+function readStringRaw(data: Uint8Array, pos: number): string {
+  const r = readStringLength(data, pos);
+  if (r.length < 0) {
+    return '';
+  }
+  return bytesToAscii(data, r.next, r.next + r.length);
+}
+
+export async function extractTorrentMeta(bytes: ArrayBuffer): Promise<TorrentMeta> {
+  const meta = new TorrentMeta();
   const data = new Uint8Array(bytes);
   // 顶层必须是字典
   if (data.length < 2 || data[0] !== 0x64) {
-    return '';
+    return meta;
   }
   let i = 1;
   while (i < data.length && data[i] !== 0x65) {
     const key = readStringLength(data, i);
     if (key.length < 0) {
-      return '';
+      return meta;
     }
     const keyText = bytesToAscii(data, key.next, key.next + key.length);
     const valueStart = key.next + key.length;
     if (keyText === 'info') {
       const valueEnd = skipValue(data, valueStart);
       if (valueEnd <= valueStart) {
-        return '';
+        return meta;
       }
-      return await sha1Hex(data.subarray(valueStart, valueEnd));
+      meta.hash = await sha1Hex(data.subarray(valueStart, valueEnd));
+    } else if (keyText === 'announce') {
+      const valueEnd = skipValue(data, valueStart);
+      const text = readStringRaw(data, valueStart);
+      if (valueEnd > valueStart && text.length > 0 && meta.trackers.indexOf(text) < 0) {
+        meta.trackers.push(text);
+      }
+    } else if (keyText === 'announce-list') {
+      // announce-list = l (l <url> e)+ e
+      let j = valueStart;
+      if (j < data.length && data[j] === 0x6C) {
+        j++;
+        while (j < data.length && data[j] !== 0x65) {
+          if (data[j] === 0x6C) {
+            j++;
+            while (j < data.length && data[j] !== 0x65) {
+              const url = readStringRaw(data, j);
+              const urlEnd = skipValue(data, j);
+              if (url.length > 0 && meta.trackers.indexOf(url) < 0) {
+                meta.trackers.push(url);
+              }
+              j = urlEnd;
+            }
+            j++;
+          } else {
+            j = skipValue(data, j);
+          }
+        }
+      }
     }
     i = skipValue(data, valueStart);
   }
-  return '';
+  return meta;
+}
+
+export async function extractInfoHash(bytes: ArrayBuffer): Promise<string> {
+  const meta = await extractTorrentMeta(bytes);
+  return meta.hash;
 }

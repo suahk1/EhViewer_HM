@@ -27,7 +27,7 @@ import {
 } from '../services/EhHttpClient';
 import { PublicDownloadStartResult, startPublicDownload } from '../services/PublicDownloadService';
 import { EhUrl } from '../services/EhUrl';
-import { extractInfoHash } from '../services/TorrentInfoHash';
+import { extractTorrentMeta } from '../services/TorrentInfoHash';
 import { CommentPostResult, COMMENT_POST_UNCONFIRMED } from '../services/GalleryCommentSubmission';
 import { FavoriteCategoryInfo } from '../services/GalleryListParser';
 import { FavoriteSlotOption, favoriteSlotOptions } from '../services/FavoriteCollectionSupport';
@@ -1214,10 +1214,15 @@ export struct GalleryDetailHostScene {
       return;
     }
     let copied = '';
-    const hash = await extractInfoHash(bytes);
-    if (hash.length === 40) {
+    const meta = await extractTorrentMeta(bytes);
+    if (meta.hash.length === 40) {
       const name = torrent.name.length > 0 ? torrent.name : ('torrent_' + this.detail.gid.toString());
-      copied = 'magnet:?xt=urn:btih:' + hash + '&dn=' + encodeURIComponent(name);
+      copied = 'magnet:?xt=urn:btih:' + meta.hash + '&dn=' + encodeURIComponent(name);
+      // 磁力必须带 tracker：EH 内容在 DHT 上常常没有节点，迅雷一类的客户端
+      // 拿不到 tracker 就一直停在"解析中"。种子内的 announce 免 Cookie 可用。
+      for (const tr of meta.trackers) {
+        copied += '&tr=' + encodeURIComponent(tr);
+      }
     } else {
       copied = absolute;
       console.warn('[torrent] info_hash parse failed, fallback to url');
@@ -1226,7 +1231,7 @@ export struct GalleryDetailHostScene {
       const data = pasteboard.createData(pasteboard.MIMETYPE_TEXT_PLAIN, copied);
       await pasteboard.getSystemPasteboard().setData(data);
       this.closeArchivePanel();
-      this.showToast(hash.length === 40 ? 'Magnet copied' : 'Torrent link copied');
+      this.showToast(meta.hash.length === 40 ? 'Magnet copied' : 'Torrent link copied');
       this.renderVersion++;
     } catch (error) {
       console.error('[torrent] copy failed ' + String(error));
