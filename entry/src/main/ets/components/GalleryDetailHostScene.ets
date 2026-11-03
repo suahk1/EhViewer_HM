@@ -111,9 +111,13 @@ import {
 import { PopupScrim } from './PopupScrim';
 import { GalleryDetailOverlayScene } from './GalleryDetailScenes';
 import {
+
   DOWNLOAD_LABEL_OPTION_ASK,
   DownloadLabelSelectionDialog
 } from './DownloadLabelComponents';
+
+// ehtracker.org 的官方 IP：DNS 被污染时用它直连 tracker（服务端不校验 Host）
+const EHTRACKER_IP: string = '37.48.92.183';
 
 interface DetailHostNavigationState {
   showInfo: boolean;
@@ -1215,14 +1219,19 @@ export struct GalleryDetailHostScene {
     }
     let copied = '';
     const name = torrent.name.length > 0 ? torrent.name : ('torrent_' + this.detail.gid.toString());
-    // 先落盘：磁力要靠对方自己去 tracker/DHT 取元数据，EH 域名被污染时必然卡在"解析中"；
-    // 本地 .torrent 直接给客户端就能解析出文件列表与 tracker。
-    const savedPath = this.saveTorrentFile(bytes, name);
     const meta = await extractTorrentMeta(bytes);
     if (meta.hash.length === 40) {
       copied = 'magnet:?xt=urn:btih:' + meta.hash + '&dn=' + encodeURIComponent(name);
       for (const tr of meta.trackers) {
         copied += '&tr=' + encodeURIComponent(tr);
+        // EH 域名在部分网络被 DNS 污染，客户端解析不到 ehtracker.org 就会一直"解析中"。
+        // 实测 tracker 支持裸 IP 直连（不带 Host 头也正常返回 announce），补一条同路径的 IP 版。
+        if (tr.indexOf('ehtracker.org') >= 0) {
+          const ipTracker = tr.replace(/^https?:\/\/ehtracker\.org/, 'http://' + EHTRACKER_IP);
+          if (ipTracker !== tr) {
+            copied += '&tr=' + encodeURIComponent(ipTracker);
+          }
+        }
       }
     } else {
       copied = absolute;
@@ -1231,13 +1240,10 @@ export struct GalleryDetailHostScene {
     try {
       const data = pasteboard.createData(pasteboard.MIMETYPE_TEXT_PLAIN, copied);
       await pasteboard.getSystemPasteboard().setData(data);
+      // 复制内容整串打日志：迅雷认不出时能直接比对 hash 与 tracker
+      console.info('[torrent] copied len=' + copied.length + ' ' + copied);
       this.closeArchivePanel();
-      if (savedPath.length > 0) {
-        this.showToast('Torrent saved · pick a client to open it');
-        this.shareTorrentFile(savedPath);
-      } else {
-        this.showToast(meta.hash.length === 40 ? 'Magnet copied' : 'Torrent link copied');
-      }
+      this.showToast(meta.hash.length === 40 ? 'Magnet copied' : 'Torrent link copied');
       this.renderVersion++;
     } catch (error) {
       console.error('[torrent] copy failed ' + String(error));
@@ -1246,49 +1252,8 @@ export struct GalleryDetailHostScene {
   }
 
   // 把 .torrent 写进下载目录下的 torrents/，供迅雷等客户端直接打开（本地解析，不走网络）
-  private saveTorrentFile(bytes: ArrayBuffer, name: string): string {
-    try {
-      const context = this.getUIContext().getHostContext() as common.UIAbilityContext;
-      const dir = ehDownloadFileStore.torrentsDirectory(context);
-      const safe = name.replace(/[\\/:*?"<>|]/g, '_');
-      const fileName = safe.toLowerCase().endsWith('.torrent') ? safe : safe + '.torrent';
-      const target = dir + '/' + fileName;
-      const file = fs.openSync(target, fs.OpenMode.CREATE | fs.OpenMode.READ_WRITE | fs.OpenMode.TRUNC);
-      fs.writeSync(file.fd, bytes);
-      fs.closeSync(file);
-      console.info('[torrent] saved ' + target);
-      return target;
-    } catch (error) {
-      console.warn('[torrent] save failed ' + String(error));
-      return '';
-    }
-  }
-
   // 把 .torrent 交给系统分享面板：选中迅雷后由它本地解析文件列表，
   // 不依赖它自己去连 tracker/DHT 取元数据（EH 域名被污染时那条路必然卡"解析中"）。
-  private shareTorrentFile(path: string): void {
-    const context = getAbilityContext();
-    if (context === undefined || path.length === 0) {
-      return;
-    }
-    try {
-      const shareData = new systemShare.SharedData({
-        utd: utd.UniformDataType.FILE,
-        uri: fileUri.getUriFromPath(path),
-        title: 'EhViewer torrent'
-      });
-      const controller = new systemShare.ShareController(shareData);
-      controller.show(context, {
-        selectionMode: systemShare.SelectionMode.SINGLE,
-        previewMode: systemShare.SharePreviewMode.DETAIL
-      }).catch((error: Error) => {
-        console.warn('[torrent] share failed ' + error.message);
-      });
-    } catch (error) {
-      console.warn('[torrent] share failed ' + String(error));
-    }
-  }
-
   private closeArchivePanel(): void {
     this.archiveRequestGate.begin();
     this.archivePanelVisible = false;
