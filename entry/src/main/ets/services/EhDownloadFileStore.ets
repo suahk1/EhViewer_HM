@@ -230,12 +230,33 @@ export class EhDownloadFileStore {
       cleanupIncomplete: cleanupIncomplete };
   }
 
-  // 种子文件落盘目录：迅雷一类客户端打开本地 .torrent 就能直接解析出文件列表，
-  // 不依赖它自己去连 tracker/DHT 取元数据（EH 域名被 DNS 污染时那条路必然卡在"解析中"）。
+  // 种子归档目录：跟随「下载位置」设置，和画廊下载落在同一棵树里
   torrentsDirectory(context: common.UIAbilityContext): string {
     const dir = this.downloadRoot(context) + '/torrents';
     ensureDirectory(dir);
     return dir;
+  }
+
+  // 交给其它 App 的种子必须放在公共目录（沙箱路径外部应用读不到）；未配置公共目录返回空串
+  shareableTorrentsDirectory(context: common.UIAbilityContext): string {
+    let root = '';
+    try {
+      root = this.publicDownloadRoot(context);
+    } catch (error) {
+      return '';
+    }
+    if (root.length === 0) {
+      return '';
+    }
+    const dir = root + '/torrents';
+    ensureDirectory(dir);
+    return dir;
+  }
+
+  // 判断某个路径是否落在应用沙箱里（外部 App 读不到）
+  isAppPrivatePath(context: common.UIAbilityContext, path: string): boolean {
+    const appRoot = this.appDownloadRoot(context);
+    return appRoot.length > 0 && normalizePath(path).indexOf(normalizePath(appRoot)) === 0;
   }
 
   galleryDirectory(context: common.UIAbilityContext, gallery: GalleryInfo): string {

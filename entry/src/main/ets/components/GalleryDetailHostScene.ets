@@ -1257,36 +1257,40 @@ export struct GalleryDetailHostScene {
     }
   }
 
-  // 存到公共下载目录（没有配置时退回应用目录）：公共路径是普通文件路径，
-  // 迅雷 / 文件管理都能直接打开，不受应用沙箱 URI 的限制。
+  // 种子的两处落盘：
+  // 1) 归档：跟随「下载位置」设置（应用文件 / 下载），和画廊下载同目录树；
+  // 2) 交接：外部 App（迅雷）读不到沙箱，必须放公共目录——设置选「应用文件」时额外写一份。
   private saveTorrentFile(bytes: ArrayBuffer, name: string): string {
     try {
       const context = getAbilityContext();
       if (context === undefined) {
         return '';
       }
-      let root = '';
-      try {
-        root = ehDownloadFileStore.publicDownloadRoot(context);
-      } catch (error) {
-        root = context.filesDir + '/torrents';
-      }
-      const dir = root.endsWith('/torrents') ? root : root + '/torrents';
-      if (!fs.accessSync(dir)) {
-        fs.mkdirSync(dir);
-      }
       const safe = name.replace(/[\\/:*?"<>|]/g, '_');
       const fileName = safe.toLowerCase().endsWith('.torrent') ? safe : safe + '.torrent';
-      const target = dir + '/' + fileName;
-      const file = fs.openSync(target, fs.OpenMode.CREATE | fs.OpenMode.READ_WRITE | fs.OpenMode.TRUNC);
-      fs.writeSync(file.fd, bytes);
-      fs.closeSync(file);
-      console.info('[torrent] saved ' + target);
-      return target;
+      const archiveDir = ehDownloadFileStore.torrentsDirectory(context);
+      const archivePath = archiveDir + '/' + fileName;
+      this.writeBytes(archivePath, bytes);
+      let handoffPath = archivePath;
+      if (ehDownloadFileStore.isAppPrivatePath(context, archivePath)) {
+        const shareDir = ehDownloadFileStore.shareableTorrentsDirectory(context);
+        if (shareDir.length > 0) {
+          handoffPath = shareDir + '/' + fileName;
+          this.writeBytes(handoffPath, bytes);
+        }
+      }
+      console.info('[torrent] saved ' + archivePath + ' handoff=' + handoffPath);
+      return handoffPath;
     } catch (error) {
       console.warn('[torrent] save failed ' + String(error));
       return '';
     }
+  }
+
+  private writeBytes(path: string, bytes: ArrayBuffer): void {
+    const file = fs.openSync(path, fs.OpenMode.CREATE | fs.OpenMode.READ_WRITE | fs.OpenMode.TRUNC);
+    fs.writeSync(file.fd, bytes);
+    fs.closeSync(file);
   }
 
   // 直接把种子文件交给迅雷（其 module 声明了 file scheme + application/x-bittorrent）
