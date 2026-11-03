@@ -1214,12 +1214,13 @@ export struct GalleryDetailHostScene {
       return;
     }
     let copied = '';
+    const name = torrent.name.length > 0 ? torrent.name : ('torrent_' + this.detail.gid.toString());
+    // 先落盘：磁力要靠对方自己去 tracker/DHT 取元数据，EH 域名被污染时必然卡在"解析中"；
+    // 本地 .torrent 直接给客户端就能解析出文件列表与 tracker。
+    const savedPath = this.saveTorrentFile(bytes, name);
     const meta = await extractTorrentMeta(bytes);
     if (meta.hash.length === 40) {
-      const name = torrent.name.length > 0 ? torrent.name : ('torrent_' + this.detail.gid.toString());
       copied = 'magnet:?xt=urn:btih:' + meta.hash + '&dn=' + encodeURIComponent(name);
-      // 磁力必须带 tracker：EH 内容在 DHT 上常常没有节点，迅雷一类的客户端
-      // 拿不到 tracker 就一直停在"解析中"。种子内的 announce 免 Cookie 可用。
       for (const tr of meta.trackers) {
         copied += '&tr=' + encodeURIComponent(tr);
       }
@@ -1231,11 +1232,60 @@ export struct GalleryDetailHostScene {
       const data = pasteboard.createData(pasteboard.MIMETYPE_TEXT_PLAIN, copied);
       await pasteboard.getSystemPasteboard().setData(data);
       this.closeArchivePanel();
-      this.showToast(meta.hash.length === 40 ? 'Magnet copied' : 'Torrent link copied');
+      if (savedPath.length > 0) {
+        this.showToast('Torrent saved · pick a client to open it');
+        this.shareTorrentFile(savedPath);
+      } else {
+        this.showToast(meta.hash.length === 40 ? 'Magnet copied' : 'Torrent link copied');
+      }
       this.renderVersion++;
     } catch (error) {
       console.error('[torrent] copy failed ' + String(error));
       this.showToast('Copy failed');
+    }
+  }
+
+  // 把 .torrent 写进下载目录下的 torrents/，供迅雷等客户端直接打开（本地解析，不走网络）
+  private saveTorrentFile(bytes: ArrayBuffer, name: string): string {
+    try {
+      const context = this.getUIContext().getHostContext() as common.UIAbilityContext;
+      const dir = ehDownloadFileStore.torrentsDirectory(context);
+      const safe = name.replace(/[\\/:*?"<>|]/g, '_');
+      const fileName = safe.toLowerCase().endsWith('.torrent') ? safe : safe + '.torrent';
+      const target = dir + '/' + fileName;
+      const file = fs.openSync(target, fs.OpenMode.CREATE | fs.OpenMode.READ_WRITE | fs.OpenMode.TRUNC);
+      fs.writeSync(file.fd, bytes);
+      fs.closeSync(file);
+      console.info('[torrent] saved ' + target);
+      return target;
+    } catch (error) {
+      console.warn('[torrent] save failed ' + String(error));
+      return '';
+    }
+  }
+
+  // 把 .torrent 交给系统分享面板：选中迅雷后由它本地解析文件列表，
+  // 不依赖它自己去连 tracker/DHT 取元数据（EH 域名被污染时那条路必然卡"解析中"）。
+  private shareTorrentFile(path: string): void {
+    const context = getAbilityContext();
+    if (context === undefined || path.length === 0) {
+      return;
+    }
+    try {
+      const shareData = new systemShare.SharedData({
+        utd: utd.UniformDataType.FILE,
+        uri: fileUri.getUriFromPath(path),
+        title: 'EhViewer torrent'
+      });
+      const controller = new systemShare.ShareController(shareData);
+      controller.show(context, {
+        selectionMode: systemShare.SelectionMode.SINGLE,
+        previewMode: systemShare.SharePreviewMode.DETAIL
+      }).catch((error: Error) => {
+        console.warn('[torrent] share failed ' + error.message);
+      });
+    } catch (error) {
+      console.warn('[torrent] share failed ' + String(error));
     }
   }
 

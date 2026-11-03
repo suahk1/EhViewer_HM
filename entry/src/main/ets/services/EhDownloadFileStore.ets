@@ -230,6 +230,14 @@ export class EhDownloadFileStore {
       cleanupIncomplete: cleanupIncomplete };
   }
 
+  // 种子文件落盘目录：迅雷一类客户端打开本地 .torrent 就能直接解析出文件列表，
+  // 不依赖它自己去连 tracker/DHT 取元数据（EH 域名被 DNS 污染时那条路必然卡在"解析中"）。
+  torrentsDirectory(context: common.UIAbilityContext): string {
+    const dir = this.downloadRoot(context) + '/torrents';
+    ensureDirectory(dir);
+    return dir;
+  }
+
   galleryDirectory(context: common.UIAbilityContext, gallery: GalleryInfo): string {
     const root = this.downloadRoot(context);
     // 本地图档没有 gid，目录名直接用标题，与 localGalleryDirectory 的命名保持一致。

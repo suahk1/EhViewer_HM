@@ -119,6 +119,25 @@ export function uiStatusText(text: string): string {
 }
 
 function simplifiedUiStatusText(text: string): string {
+  // 种子相关提示：存文件 + 分享，要让人看懂下一步做什么
+  if (text.indexOf('Torrent saved') === 0) {
+    return '种子已保存，选迅雷打开即可（无需解析）';
+  }
+  if (text === 'Magnet copied') {
+    return '磁力已复制';
+  }
+  if (text === 'Torrent link copied') {
+    return '已复制种子下载链接';
+  }
+  if (text === 'Fetching torrent') {
+    return '正在获取种子…';
+  }
+  if (text === 'Torrent download failed') {
+    return '种子下载失败';
+  }
+  if (text === 'Torrent link unavailable') {
+    return '种子链接不可用';
+  }
   const deleteDownloadsMatch = /^Delete (\d+) selected downloads and their files\?$/.exec(text);
   if (deleteDownloadsMatch !== null) {
     return '将删除选中的 ' + deleteDownloadsMatch[1] + ' 个下载项及其文件，是否继续？';
