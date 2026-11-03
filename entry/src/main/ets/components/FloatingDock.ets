@@ -381,8 +381,16 @@ export struct FloatingDock {
       .scale({ x: this.iconScale(entry), y: this.iconScale(entry) })
       .animation({ duration: DOCK_FADE_MS, curve: Curve.EaseOut })
 
+      // 英文标签（Homepage/Download 等）比中文宽，固定 11fp 会被裁成 Homepa/Downloa：
+      // 先用 width('100%') 把 Text 约束进等分栏（否则 Text 按内容宽溢出、自适应不触发），
+      // 再允许 9~11fp 自动缩字号，单行完整显示；中文仍以 11fp 渲染不受影响。
       Text(uiText(entry.label))
+        .width('100%')
+        .textAlign(TextAlign.Center)
         .fontSize(11)
+        .minFontSize(9)
+        .maxFontSize(11)
+        .heightAdaptivePolicy(TextHeightAdaptivePolicy.MIN_FONT_SIZE_FIRST)
         .lineHeight(14)
         .fontWeight(this.isActive(entry) ? FontWeight.Medium : FontWeight.Regular)
         .fontColor(this.isActive(entry) ? themePrimaryText() : themeSecondaryText())

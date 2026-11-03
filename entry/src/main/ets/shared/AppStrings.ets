@@ -79,6 +79,14 @@ function localizedChineseText(text: string): string {
 }
 
 export function uiText(text: string): string {
+  // 语言选项用自称（endonym），不随界面语言翻译：英文界面下
+  // 「zh-CN/zh-TW」会原样透传，看起来像坏的 locale code。
+  if (text === 'zh-CN') {
+    return '简体中文';
+  }
+  if (text === 'zh-TW') {
+    return '繁體中文';
+  }
   const language = currentUiLanguage();
   if (language === 'English') {
     return text;
