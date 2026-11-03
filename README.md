@@ -19,7 +19,7 @@
 
 EhViewer HM 是 Android 版 EhViewer 的鸿蒙移植版本，用 ArkTS / ArkUI 重写，一套代码适配手机、折叠屏、平板与电脑窗口。
 
-当前版本：`0.1.0`。本应用仅为客户端，不提供、不托管任何内容；使用前请确认所在地区的法律法规与目标网站的服务条款。
+当前版本：`0.1.2`。本应用仅为客户端，不提供、不托管任何内容；使用前请确认所在地区的法律法规与目标网站的服务条款。
 
 ## 功能
 
@@ -81,7 +81,7 @@ EhViewer HM 是 Android 版 EhViewer 的鸿蒙移植版本，用 ArkTS / ArkUI �
 
 ## 安装
 
-在 Releases 下载 `EhViewer_HM_0.1.0.hap`，用调试助手或 `hdc install` 安装。
+在 Releases 下载 `entry-default-signed.hap`，用调试助手或 `hdc install` 安装。
 
 | 项 | 要求 |
 | :--- | :--- |

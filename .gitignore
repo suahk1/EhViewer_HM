@@ -38,3 +38,10 @@ Crash_*.dmp
 # local workspace data
 .workbuddy/
 check_locks.py
+
+# 内部资料，禁止入库（沟通记录、方案文档、验收报告等）
+方案_*.md
+*.docx
+*.doc
+*.pdf
+docs/*.docx

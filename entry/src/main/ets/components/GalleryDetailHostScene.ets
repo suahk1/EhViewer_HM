@@ -2,7 +2,7 @@ import { ehCookieStore } from '../services/EhCookieStore';
 import { common } from '@kit.AbilityKit';
 import { uniformTypeDescriptor as utd } from '@kit.ArkData';
 import { pasteboard } from '@kit.BasicServicesKit';
-import { fileUri, picker } from '@kit.CoreFileKit';
+import { fileIo as fs, fileUri, picker } from '@kit.CoreFileKit';
 import { systemShare } from '@kit.ShareKit';
 import { ArchiveOption, ArchiverInfo, ArchiverOption, GalleryComment, GalleryDetail, GalleryPreview, GallerySite, HathArchiveList, TorrentInfo } from '../model/GalleryModels';
 import { confirmCellularNetworkWarningForSession, shouldConfirmCellularNetworkOperation } from '../services/CellularNetworkGuard';
@@ -27,6 +27,7 @@ import {
 } from '../services/EhHttpClient';
 import { PublicDownloadStartResult, startPublicDownload } from '../services/PublicDownloadService';
 import { EhUrl } from '../services/EhUrl';
+import { extractInfoHash } from '../services/TorrentInfoHash';
 import { CommentPostResult, COMMENT_POST_UNCONFIRMED } from '../services/GalleryCommentSubmission';
 import { FavoriteCategoryInfo } from '../services/GalleryListParser';
 import { FavoriteSlotOption, favoriteSlotOptions } from '../services/FavoriteCollectionSupport';
@@ -1194,22 +1195,41 @@ export struct GalleryDetailHostScene {
       });
   }
 
-  private copyTorrentMagnet(torrent: TorrentInfo): void {
-    if (torrent.magnetUrl.length === 0) {
-      this.showToast('Magnet link unavailable');
+  // 复制的是种子文件地址，不是磁力：EH 链接里的 40 位 hash 是站点自己的编号，
+  // 不是 torrent 的 info_hash，拼成 magnet 后迅雷一类客户端无法解析。  // 下载种子文件本体：与安卓版一致，先落盘再交给迅雷一类的客户端。
+  // 磁力行不通的原因：EH 链接里的 40 位是站点编号，不是 info_hash。  // 点击种子 = 复制真磁力。info_hash 必须从 .torrent 文件里算（应用内带 Cookie 下载），
+  // 拼假的 hash 迅雷解析不出来。解析失败时退化为复制种子文件地址。
+  private async downloadTorrent(torrent: TorrentInfo): Promise<void> {
+    if (torrent.url.length === 0) {
+      this.showToast('Torrent link unavailable');
       return;
     }
+    const absolute = torrent.url.startsWith('http')
+      ? torrent.url
+      : (this.detailLink.site === GallerySite.Ex ? EhUrl.HOST_EX : EhUrl.HOST_E) + torrent.url.replace(/^\/+/, '');
+    this.showToast('Fetching torrent');
+    const bytes = await this.client.fetchTorrentBytes(absolute);
+    if (bytes === null) {
+      this.showToast('Torrent download failed');
+      return;
+    }
+    let copied = '';
+    const hash = await extractInfoHash(bytes);
+    if (hash.length === 40) {
+      const name = torrent.name.length > 0 ? torrent.name : ('torrent_' + this.detail.gid.toString());
+      copied = 'magnet:?xt=urn:btih:' + hash + '&dn=' + encodeURIComponent(name);
+    } else {
+      copied = absolute;
+      console.warn('[torrent] info_hash parse failed, fallback to url');
+    }
     try {
-      const data = pasteboard.createData(pasteboard.MIMETYPE_TEXT_PLAIN, torrent.magnetUrl);
-      pasteboard.getSystemPasteboard().setData(data).then(() => {
-        this.closeArchivePanel();
-        this.detailStatus = 'Magnet link copied';
-        this.showToast('Magnet link copied');
-        this.renderVersion++;
-      }).catch(() => {
-        this.showToast('Copy failed');
-      });
+      const data = pasteboard.createData(pasteboard.MIMETYPE_TEXT_PLAIN, copied);
+      await pasteboard.getSystemPasteboard().setData(data);
+      this.closeArchivePanel();
+      this.showToast(hash.length === 40 ? 'Magnet copied' : 'Torrent link copied');
+      this.renderVersion++;
     } catch (error) {
+      console.error('[torrent] copy failed ' + String(error));
       this.showToast('Copy failed');
     }
   }
@@ -1823,7 +1843,7 @@ export struct GalleryDetailHostScene {
         onCloseArchivePanel: () => { this.closeArchivePanel(); },
         onSelectArchiverOption: (option: ArchiverOption) => { this.submitArchiverOption(option); },
         onSelectHathOption: (option: ArchiveOption) => { this.submitHathOption(option); },
-        onSelectTorrent: (torrent: TorrentInfo) => { this.copyTorrentMagnet(torrent); },
+        onSelectTorrent: (torrent: TorrentInfo) => { this.downloadTorrent(torrent); },
         onLoadMorePreviews: () => {
           this.loadNextDetailPreviewPage();
         },

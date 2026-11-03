@@ -21,7 +21,7 @@ English · [简体中文](README.md)
 
 EhViewer HM is a HarmonyOS port of the Android EhViewer app, rewritten in ArkTS / ArkUI. One codebase covers phones, foldables, tablets and desktop windows.
 
-Current version: `0.1.0`. This app is a client only and hosts no content. Check the laws of your region and the terms of service of the sites you use.
+Current version: `0.1.2`. This app is a client only and hosts no content. Check the laws of your region and the terms of service of the sites you use.
 
 ## Features
 
@@ -83,7 +83,7 @@ Three things to know before starting:
 
 ## Installation
 
-Download `EhViewer_HM_0.1.0.hap` from Releases and install with a debug assistant or `hdc install`.
+Download `entry-default-signed.hap` from Releases and install with a debug assistant or `hdc install`.
 
 | Item | Value |
 | :--- | :--- |

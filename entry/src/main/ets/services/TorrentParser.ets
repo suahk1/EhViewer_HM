@@ -34,7 +34,8 @@ function appendTorrent(target: TorrentInfo[], block: string): void {
   if (match === null) {
     return;
   }
-  const url = stripPrivatePasskey(decodeHtml(match[1]).trim());
+  // 不能去掉 ?p=：那是下载种子用的通行证，去掉后服务器会返回网页而不是种子文件。
+  const url = decodeHtml(match[1]).trim();
   const hash = torrentHash(url);
   if (hash.length === 0) {
     // 保留可诊断性：链接格式不认识时打一条，便于后续对照真实 HTML 修正

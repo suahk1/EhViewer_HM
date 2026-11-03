@@ -1,4 +1,5 @@
 import { http } from '@kit.NetworkKit';
+import { BusinessError } from '@kit.BasicServicesKit';
 import { FormField, buildFormBody } from './FormBody';
 import { fileIo as fs } from '@kit.CoreFileKit';
 import {
@@ -929,6 +930,39 @@ export class EhHttpClient {
   async loadGalleryPage(pageUrl: string, site: GallerySite = GallerySite.E,
     referer: string = EhUrl.getReferer(site)): Promise<GalleryPageLoadResult> {
     return this.loadGalleryPageFast(pageUrl, site, referer, true);
+  }
+
+  // 直接取 .torrent 文件本体：外部客户端拿不到 Cookie，只有应用内下载才能取到 ex 站的种子
+  async fetchTorrentBytes(url: string): Promise<ArrayBuffer | null> {
+    let request: http.HttpRequest | null = null;
+    try {
+      request = http.createHttp();
+      const response = await request.request(url, {
+        method: http.RequestMethod.GET,
+        header: {
+          'Cookie': ehCookieStore.getCookieHeaderForUrl(url),
+          'Referer': EhUrl.getReferer(),
+          'User-Agent': ANDROID_CHROME_USER_AGENT
+        },
+        expectDataType: http.HttpDataType.ARRAY_BUFFER,
+        connectTimeout: 20000,
+        readTimeout: 60000
+      });
+      const statusCode = Number(response.responseCode);
+      if (statusCode !== 200) {
+        console.warn('[torrent] file http ' + statusCode + ' url=' + url);
+        return null;
+      }
+      return response.result as ArrayBuffer;
+    } catch (error) {
+      const err = error as BusinessError;
+      console.warn('[torrent] file fetch failed code=' + err.code + ' msg=' + err.message + ' url=' + url);
+      return null;
+    } finally {
+      if (request !== null) {
+        request.destroy();
+      }
+    }
   }
 
   async loadTorrentList(torrentUrl: string, gid: number, token: string,
