@@ -1203,6 +1203,10 @@ export struct GalleryDetailHostScene {
   // 不是 torrent 的 info_hash，拼成 magnet 后迅雷一类客户端无法解析。  // 下载种子文件本体：与安卓版一致，先落盘再交给迅雷一类的客户端。
   // 磁力行不通的原因：EH 链接里的 40 位是站点编号，不是 info_hash。  // 点击种子 = 复制真磁力。info_hash 必须从 .torrent 文件里算（应用内带 Cookie 下载），
   // 拼假的 hash 迅雷解析不出来。解析失败时退化为复制种子文件地址。
+  // 同一个种子短时间内重复点击时只交接一次：否则迅雷会叠多个"添加任务"、同名还问覆盖
+  private lastHandoffHash: string = '';
+  private lastHandoffAt: number = 0;
+
   private async downloadTorrent(torrent: TorrentInfo): Promise<void> {
     if (torrent.url.length === 0) {
       this.showToast('Torrent link unavailable');
@@ -1251,6 +1255,14 @@ export struct GalleryDetailHostScene {
     }
     // 磁力解析元数据要靠连 peer，成不成看运气；种子文件里已写死文件列表，
     // 直接交给客户端打开就是确定的。落盘后用 file URI + viewData 拉起。
+    const now = Date.now();
+    if (meta.hash.length === 40 && meta.hash === this.lastHandoffHash &&
+      now - this.lastHandoffAt < 8000) {
+      console.info('[torrent] duplicate tap ignored hash=' + meta.hash);
+      return;
+    }
+    this.lastHandoffHash = meta.hash;
+    this.lastHandoffAt = now;
     const savedPath = this.saveTorrentFile(bytes, name);
     if (savedPath.length > 0) {
       this.handTorrentToClient(savedPath);
@@ -1294,22 +1306,35 @@ export struct GalleryDetailHostScene {
   }
 
   // 直接把种子文件交给迅雷（其 module 声明了 file scheme + application/x-bittorrent）
+  // 交给任意能打开 torrent 的客户端：先试迅雷（装了就直接用），
+  // 没有迅雷就让系统按 application/x-bittorrent 自己解析能处理的 App。
   private handTorrentToClient(path: string): void {
     const context = getAbilityContext();
     if (context === undefined) {
       return;
     }
-    const want: Want = {
-      bundleName: 'com.xunlei.thunder',
+    const uri = fileUri.getUriFromPath(path);
+    const base: Want = {
       action: 'ohos.want.action.viewData',
-      uri: fileUri.getUriFromPath(path),
+      uri: uri,
       type: 'application/x-bittorrent',
       flags: wantConstant.Flags.FLAG_AUTH_READ_URI_PERMISSION
     };
-    context.startAbility(want).then(() => {
-      console.info('[torrent] handed to client');
-    }).catch((error: Error) => {
-      console.warn('[torrent] hand off failed ' + error.message);
+    const explicit: Want = {
+      bundleName: 'com.xunlei.thunder',
+      action: base.action,
+      uri: uri,
+      type: base.type,
+      flags: base.flags
+    };
+    context.startAbility(explicit).then(() => {
+      console.info('[torrent] handed to thunder');
+    }).catch(() => {
+      context.startAbility(base).then(() => {
+        console.info('[torrent] handed to system handler');
+      }).catch((error: Error) => {
+        console.warn('[torrent] hand off failed ' + error.message);
+      });
     });
   }
 
