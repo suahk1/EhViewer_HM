@@ -495,3 +495,198 @@ export struct DownloadLabelManagerScene {
     .backgroundColor(themePageBackground())
   }
 }
+
+// 删除确认用的自绘弹窗：系统 showDialog 是系统样式，不跟应用主题、无法设 customStyle，
+// 弹出来像另一套 UI，观感上就是「不沉浸」。这里用与标签面板同一套材质与遮罩自绘。
+@Component
+export struct DownloadDeleteConfirmDialog {
+  @State popupWidth: number = 0;
+  @State popupHeight: number = 0;
+  @Prop itemCount: number = 0;
+  @Prop cloudAvailable: boolean = false;
+  onRemoveRecords: () => void = () => {};
+  onDeleteLocal: () => void = () => {};
+  onDeleteCloud: () => void = () => {};
+  onClose: () => void = () => {};
+  @StorageProp(LANGUAGE_REVISION_KEY) languageRevision: number = 0;
+
+  build() {
+    Stack({ alignContent: Alignment.Center }) {
+      PopupScrim({
+        showCutout: this.popupWidth > 0 && this.popupHeight > 0,
+        cutoutWidth: this.popupWidth,
+        cutoutHeight: this.popupHeight,
+        cutoutRadius: uiDialogSurfaceRadius(),
+        onDismiss: () => {
+          this.onClose();
+        }
+      })
+
+      Column() {
+        Column({ space: 4 }) {
+          Text(uiText('Delete') + ' ' + this.itemCount.toString() + ' ' + uiText('items'))
+            .fontSize(19)
+            .fontWeight(FontWeight.Medium)
+            .fontColor(themePrimaryText())
+            .width('100%')
+            .maxLines(1)
+            .textOverflow({ overflow: TextOverflow.Ellipsis })
+
+          Text(uiText('Choose how to handle the selected items'))
+            .fontSize(13)
+            .fontColor(themeSecondaryText())
+            .width('100%')
+            .maxLines(2)
+        }
+        .width('100%')
+        .padding({ left: 20, right: 20, top: 20, bottom: 14 })
+        .alignItems(HorizontalAlign.Start)
+
+        Divider().color(themeDividerColor()).strokeWidth(0.5)
+
+        Row({ space: 12 }) {
+          Column() {
+            SymbolGlyph($r('sys.symbol.trash'))
+              .fontSize(20)
+              .fontColor([themeAccentTextColor()])
+          }
+          .width(38)
+          .height(38)
+          .borderRadius(uiRadius(9))
+          .backgroundColor(themeSurfaceVariant())
+          .justifyContent(FlexAlign.Center)
+          .alignItems(HorizontalAlign.Center)
+
+          Column({ space: 2 }) {
+            Text(uiText('Delete download records'))
+              .fontSize(15)
+              .fontColor(themePrimaryText())
+              .width('100%')
+              .maxLines(1)
+              .textOverflow({ overflow: TextOverflow.Ellipsis })
+            Text(uiText('Only removes the list entry, files are kept'))
+              .fontSize(12)
+              .fontColor(themeSecondaryText())
+              .width('100%')
+              .maxLines(2)
+              .textOverflow({ overflow: TextOverflow.Ellipsis })
+          }
+          .layoutWeight(1)
+          .alignItems(HorizontalAlign.Start)
+        }
+        .width('100%')
+        .padding({ left: 18, right: 18, top: 12, bottom: 12 })
+        .onClick(() => {
+          this.onRemoveRecords();
+        })
+
+        Divider().color(themeDividerColor()).strokeWidth(0.5).margin({ left: 18, right: 18 })
+
+        Row({ space: 12 }) {
+          Column() {
+            SymbolGlyph($r('sys.symbol.folder'))
+              .fontSize(20)
+              .fontColor([themeAccentTextColor()])
+          }
+          .width(38)
+          .height(38)
+          .borderRadius(uiRadius(9))
+          .backgroundColor(themeSurfaceVariant())
+          .justifyContent(FlexAlign.Center)
+          .alignItems(HorizontalAlign.Center)
+
+          Column({ space: 2 }) {
+            Text(uiText('Delete local gallery'))
+              .fontSize(15)
+              .fontColor(themePrimaryText())
+              .width('100%')
+              .maxLines(1)
+              .textOverflow({ overflow: TextOverflow.Ellipsis })
+            Text(uiText('Also deletes the files on this device'))
+              .fontSize(12)
+              .fontColor(themeSecondaryText())
+              .width('100%')
+              .maxLines(2)
+              .textOverflow({ overflow: TextOverflow.Ellipsis })
+          }
+          .layoutWeight(1)
+          .alignItems(HorizontalAlign.Start)
+        }
+        .width('100%')
+        .padding({ left: 18, right: 18, top: 12, bottom: 12 })
+        .onClick(() => {
+          this.onDeleteLocal();
+        })
+
+        if (this.cloudAvailable) {
+          Divider().color(themeDividerColor()).strokeWidth(0.5).margin({ left: 18, right: 18 })
+
+          Row({ space: 12 }) {
+            Column() {
+              SymbolGlyph($r('sys.symbol.cloud'))
+                .fontSize(20)
+                .fontColor([themeAccentTextColor()])
+            }
+            .width(38)
+            .height(38)
+            .borderRadius(uiRadius(9))
+            .backgroundColor(themeSurfaceVariant())
+            .justifyContent(FlexAlign.Center)
+            .alignItems(HorizontalAlign.Center)
+
+            Column({ space: 2 }) {
+              Text(uiText('Delete from cloud'))
+                .fontSize(15)
+                .fontColor(themePrimaryText())
+                .width('100%')
+                .maxLines(1)
+                .textOverflow({ overflow: TextOverflow.Ellipsis })
+              Text(uiText('Removes the record on all devices'))
+                .fontSize(12)
+                .fontColor(themeSecondaryText())
+                .width('100%')
+                .maxLines(2)
+                .textOverflow({ overflow: TextOverflow.Ellipsis })
+            }
+            .layoutWeight(1)
+            .alignItems(HorizontalAlign.Start)
+          }
+          .width('100%')
+          .padding({ left: 18, right: 18, top: 12, bottom: 12 })
+          .onClick(() => {
+            this.onDeleteCloud();
+          })
+        }
+
+        Divider().color(themeDividerColor()).strokeWidth(0.5)
+
+        Row() {
+          Text(uiText('Cancel'))
+            .fontSize(16)
+            .fontColor(themeAccentTextColor())
+            .layoutWeight(1)
+            .textAlign(TextAlign.Center)
+        }
+        .width('100%')
+        .height(52)
+        .alignItems(VerticalAlign.Center)
+        .onClick(() => {
+          this.onClose();
+        })
+      }
+      .width('78%')
+      .constraintSize({ maxWidth: 380, minWidth: 280 })
+      .backgroundColor(uiMaterialBackground(uiDialogSurfaceBackground()))
+      .shadow(uiDialogSurfaceShadow())
+      .borderRadius(uiDialogSurfaceRadius())
+      .backgroundBlurStyle(uiDialogBlurStyle(), uiDialogBlurOptions())
+      .systemMaterial(uiDialogMaterial())
+      .onAreaChange((_oldArea: Area, newArea: Area) => {
+        this.popupWidth = Number.parseFloat(newArea.width.toString());
+        this.popupHeight = Number.parseFloat(newArea.height.toString());
+      })
+    }
+    .width('100%')
+    .height('100%')
+  }
+}

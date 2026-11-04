@@ -139,6 +139,7 @@ import {
   DownloadLabelEditDialog,
   DownloadLabelManagerScene,
   DownloadLabelSelectionDialog,
+  DownloadDeleteConfirmDialog,
 } from './DownloadLabelComponents';
 import {
   RightSidePanelLayer,
@@ -400,6 +401,10 @@ export struct DownloadScene {
     });
   private cellularWarningDialogOpen: boolean = false;
   private deleteConfirmationDialogOpen: boolean = false;
+  // 删除确认改用自绘浮层：系统 showDialog 不跟应用主题，观感不沉浸。
+  @State deleteConfirmVisible: boolean = false;
+  @State deleteConfirmCount: number = 0;
+  @State deleteConfirmCloudAvailable: boolean = false;
   private downloadCardStates: Map<number, DownloadCardState> = new Map<number, DownloadCardState>();
   private downloadItemsByGid: Map<number, DownloadInfo> = new Map();
   private downloadProjection: DownloadListProjection = new DownloadListProjection();
@@ -2036,66 +2041,17 @@ export struct DownloadScene {
     if (this.deleteConfirmationDialogOpen) {
       return;
     }
+    // 打开自绘确认层，动作在用户点选后执行；期间用标记挡住重复触发。
+    this.deleteConfirmCloudAvailable =
+      remoteStorageProfileStore.profileForPurpose(REMOTE_STORAGE_PURPOSE_DOWNLOADS) !== null;
+    this.deleteConfirmCount = selected.length;
     this.deleteConfirmationDialogOpen = true;
-    const cloudAvailable = remoteStorageProfileStore.profileForPurpose(REMOTE_STORAGE_PURPOSE_DOWNLOADS) !== null;
-    this.getUIContext().getPromptAction().showDialog({
-      title: uiText('Delete'),
-      message: cloudAvailable ?
-        uiText('Delete from this device or from the cloud (all devices)?') :
-        uiText('Delete') + ' ' + selected.length.toString() + ' ' + uiText('items') + '?',
-      // 按钮顺序固定：删除下载记录 → 删除本地图册 →（云端）→ 取消。
-      // 「取消」必须在最后，第一个位置留给真正的默认动作，避免误触。
-      buttons: cloudAvailable ? [
-        {
-          text: uiText('Delete download records'),
-          color: themeAccentTextColor()
-        },
-        {
-          text: uiText('Delete local gallery'),
-          color: themeAccentTextColor()
-        },
-        {
-          text: uiText('Delete from cloud'),
-          color: themeAccentTextColor()
-        },
-        {
-          text: uiText('Cancel'),
-          color: themeSecondaryText()
-        }
-      ] : [
-        {
-          text: uiText('Delete download records'),
-          color: themeAccentTextColor()
-        },
-        {
-          text: uiText('Delete local gallery'),
-          color: themeAccentTextColor()
-        },
-        {
-          text: uiText('Cancel'),
-          color: themeSecondaryText()
-        }
-      ]
-    }).then((data) => {
-      this.deleteConfirmationDialogOpen = false;
-      if (!cloudAvailable) {
-        if (data.index === 0) {
-          this.removeSelectedRecordsOnly(selected);
-        } else if (data.index === 1) {
-          this.removeSelectedDownloads(selected);
-        }
-        return;
-      }
-      if (data.index === 0) {
-        this.removeSelectedRecordsOnly(selected);
-      } else if (data.index === 1) {
-        this.deleteSelectedLocalOnly(selected);
-      } else if (data.index === 2) {
-        this.deleteSelectedFromCloud(selected);
-      }
-    }).catch(() => {
-      this.deleteConfirmationDialogOpen = false;
-    });
+    this.deleteConfirmVisible = true;
+  }
+
+  private closeDeleteConfirm(): void {
+    this.deleteConfirmVisible = false;
+    this.deleteConfirmationDialogOpen = false;
   }
 
   private deleteSelectedLocalOnly(selected: DownloadInfo[]): void {
@@ -3560,6 +3516,39 @@ export struct DownloadScene {
             y: 0
           })
           .zIndex(36)
+      }
+
+      if (this.deleteConfirmVisible) {
+        DownloadDeleteConfirmDialog({
+          itemCount: this.deleteConfirmCount,
+          cloudAvailable: this.deleteConfirmCloudAvailable,
+          onRemoveRecords: () => {
+            const selected = this.selectedDownloadItems();
+            this.closeDeleteConfirm();
+            this.removeSelectedRecordsOnly(selected);
+          },
+          onDeleteLocal: () => {
+            const selected = this.selectedDownloadItems();
+            this.closeDeleteConfirm();
+            if (this.deleteConfirmCloudAvailable) {
+              this.deleteSelectedLocalOnly(selected);
+            } else {
+              this.removeSelectedDownloads(selected);
+            }
+          },
+          onDeleteCloud: () => {
+            const selected = this.selectedDownloadItems();
+            this.closeDeleteConfirm();
+            this.deleteSelectedFromCloud(selected);
+          },
+          onClose: () => {
+            this.closeDeleteConfirm();
+          }
+        })
+          .width('100%')
+          .height('100%')
+          .position({ x: 0, y: 0 })
+          .zIndex(70)
       }
       }
       .id('download-scene-root')

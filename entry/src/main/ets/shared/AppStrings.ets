@@ -1869,6 +1869,10 @@ export function zhText(text: string): string {
     case 'Remove records only': return '仅删记录（保留文件）';
     case 'Delete download records': return '删除下载记录';
     case 'Delete local gallery': return '删除本地图册';
+    case 'Choose how to handle the selected items': return '选择处理方式';
+    case 'Only removes the list entry, files are kept': return '仅移除列表记录，不删除文件';
+    case 'Also deletes the files on this device': return '同时删除本机文件，不可恢复';
+    case 'Removes the record on all devices': return '所有设备上的记录都会移除';
     case 'Download quota reached': return '下载配额已满，请稍后重试';
     case 'Too many requests': return '请求过于频繁，请稍后重试';
     case 'Access denied for download': return '访问被拒，请检查登录状态';
