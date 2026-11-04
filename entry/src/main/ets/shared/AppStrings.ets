@@ -146,6 +146,10 @@ function localizedFailureReason(reason: string): string {
 }
 
 function simplifiedUiStatusText(text: string): string {
+  const legacyStatus = legacyUiMessage(text);
+  if (legacyStatus.length > 0) {
+    return legacyStatus;
+  }
   // 加载失败的原因来自网络层原始信息，逐条落到中文，避免中英混排。
   if (text.indexOf('Load failed: ') === 0) {
     return '加载失败：' + localizedFailureReason(text.substring('Load failed: '.length));
@@ -804,7 +808,408 @@ export function uiPageText(prefix: string, page: number): string {
   return shouldUseChineseUi() ? localizedChineseText(prefix + page.toString() + ' 页') : prefix + page.toString();
 }
 
+
+// 历史遗留的界面英文：状态栏、错误提示、下载与设置的操作结果。
+// 这些字符串来自业务代码直接拼接，没有走 uiText 的 key 表，集中在这里兜底。
+function legacyUiMessage(text: string): string {
+  if (text === 'This action needs a signed-in E-Hentai account. Sign in from the side drawer, then come back.') {
+    return '该操作需要登录 E-Hentai 账号，请先从侧边抽屉登录后再返回';
+  }
+  if (text === 'ZIP import summary: processed 1, skipped 0. Delete processed archives?') {
+    return 'ZIP 导入结果：已处理 1，跳过 0。是否删除已处理的压缩包？';
+  }
+  if (text === 'Enter ipb_member_id and ipb_pass_hash, or paste a full Cookie header') {
+    return '填写 ipb_member_id 与 ipb_pass_hash，或粘贴完整 Cookie 头';
+  }
+  if (text === 'Finish login in the web page; Cookie will be captured automatically') {
+    return '在网页中完成登录，Cookie 会自动获取';
+  }
+  if (text.indexOf('This action needs a signed-in E-Hentai account. Sign in from ') === 0) {
+    return '该操作需要登录 E-Hentai 账号，请先到 ' + text.substring(61);
+  }
+  if (text === 'Enter ipb_member_id and ipb_pass_hash, or paste a full Cookie') {
+    return '填写 ipb_member_id 与 ipb_pass_hash，或粘贴完整 Cookie';
+  }
+  if (text.indexOf('ZIP import summary: processed 1, skipped 0. Delete processed ') === 0) {
+    return 'ZIP 导入结果：已处理 1，跳过 0。是否删除已处理的 ' + text.substring(61);
+  }
+  if (text === 'The gallery is still loading. Please try again in a moment.') {
+    return '画廊仍在加载，请稍后再试';
+  }
+  if (text === 'ipb_pass_hash should be 32 lowercase letters or digits') {
+    return 'ipb_pass_hash 应为 32 位小写字母或数字';
+  }
+  if (text === 'Import failed: not a valid EhViewer backup file') {
+    return '导入失败：不是有效的 EhViewer 备份文件';
+  }
+  if (text === 'Restore download items needs an ability context') {
+    return '恢复下载项需要应用上下文';
+  }
+  if (text === 'Verify cloud records needs an ability context') {
+    return '校验云端记录需要应用上下文';
+  }
+  if (text === 'Download location switched without migration') {
+    return '下载位置已切换，未迁移旧文件';
+  }
+  if (text === 'Signed in; loading account configuration...') {
+    return '登录成功，正在获取账号配置';
+  }
+  if (text === 'Web Cookie found, but context is not ready') {
+    return '已获取网页 Cookie，但应用上下文未就绪';
+  }
+  if (text === 'Clean redundancy needs an ability context') {
+    return '清理重复项需要应用上下文';
+  }
+  if (text === 'ipb_member_id should contain digits only') {
+    return 'ipb_member_id 只能包含数字';
+  }
+  if (text === 'Sign in with an E-Hentai forum account') {
+    return '使用 E-Hentai 论坛账号登录';
+  }
+  if (text === 'UConfig requires a signed-in session') {
+    return '账号配置需要先登录';
+  }
+  if (text === 'My Tags requires a signed-in session') {
+    return '标签功能需要先登录';
+  }
+  if (text === 'Download location needs app context') {
+    return '修改下载位置需要应用上下文';
+  }
+  if (text.indexOf('Network diagnostics export failed: ') === 0) {
+    return '网络诊断导出失败：' + text.substring(35);
+  }
+  if (text === 'Update download link is unavailable') {
+    return '更新下载链接不可用';
+  }
+  if (text === 'Export log needs an ability context') {
+    return '导出日志需要应用上下文';
+  }
+  if (text.indexOf('Imported history metadata rebuilt: ') === 0) {
+    return '已重建导入的历史元数据：' + text.substring(35);
+  }
+  if (text === 'Random needs a loaded gallery list') {
+    return '随机跳转需要先加载画廊列表';
+  }
+  if (text.indexOf('Signed in but Cookie save failed: ') === 0) {
+    return '登录成功，但 Cookie 保存失败：' + text.substring(34);
+  }
+  if (text === 'Download location change cancelled') {
+    return '已取消下载位置修改';
+  }
+  if (text.indexOf('Download location change failed: ') === 0) {
+    return '下载位置修改失败：' + text.substring(33);
+  }
+  if (text === 'No redundant downloaded galleries') {
+    return '没有重复的已下载画廊';
+  }
+  if (text.indexOf('Deleted processed ZIP archives: ') === 0) {
+    return '已删除处理过的 ZIP：' + text.substring(32);
+  }
+  if (text.indexOf('Comment blacklist load warning: ') === 0) {
+    return '评论黑名单读取警告：' + text.substring(32);
+  }
+  if (text === 'Download folder is not available') {
+    return '下载目录不可用';
+  }
+  if (text === 'Downloads access was not granted') {
+    return '未获得下载目录权限';
+  }
+  if (text === 'Import needs an ability context') {
+    return '导入需要应用上下文';
+  }
+  if (text === 'Export needs an ability context') {
+    return '导出需要应用上下文';
+  }
+  if (text === 'Select backup file to import...') {
+    return '选择要导入的备份文件…';
+  }
+  if (text.indexOf('ZIP import summary: processed ') === 0) {
+    return 'ZIP 导入结果：已处理 ' + text.substring(30);
+  }
+  if (text === 'Default download label updated') {
+    return '默认下载标签已更新';
+  }
+  if (text === 'Loading gallery for reading...') {
+    return '正在加载画廊…';
+  }
+  if (text === 'Running network diagnostics...') {
+    return '正在运行网络诊断…';
+  }
+  if (text === 'Download label already exists') {
+    return '该下载标签已存在';
+  }
+  if (text === 'Ability context is not ready') {
+    return '应用上下文未就绪';
+  }
+  if (text === 'No failed downloads to clear') {
+    return '没有失败的下载可清理';
+  }
+  if (text === 'Cannot bookmark image search') {
+    return '图片搜索无法收藏';
+  }
+  if (text.indexOf('Scanning local galleries... ') === 0) {
+    return '正在扫描本地图册… ' + text.substring(28);
+  }
+  if (text.indexOf('Download migration failed: ') === 0) {
+    return '下载迁移失败：' + text.substring(27);
+  }
+  if (text === 'Scanning local galleries...') {
+    return '正在扫描本地图册…';
+  }
+  if (text === 'Read needs a loaded gallery') {
+    return '阅读需要先加载画廊';
+  }
+  if (text === 'Preparing secure sign in...') {
+    return '正在准备安全登录…';
+  }
+  if (text === 'Label name cannot be empty') {
+    return '标签名不能为空';
+  }
+  if (text.indexOf('Moved downloads to label: ') === 0) {
+    return '已移动下载到标签：' + text.substring(26);
+  }
+  if (text.indexOf('Restore downloads failed: ') === 0) {
+    return '恢复下载失败：' + text.substring(26);
+  }
+  if (text === 'Network diagnostics failed') {
+    return '网络诊断失败';
+  }
+  if (text === 'Switching image server...') {
+    return '正在切换图床…';
+  }
+  if (text === 'No other page to jump to') {
+    return '没有其他可跳转的页';
+  }
+  if (text === 'Username cannot be empty') {
+    return '用户名不能为空';
+  }
+  if (text === 'Password cannot be empty') {
+    return '密码不能为空';
+  }
+  if (text === 'Cookie cleared in memory') {
+    return '已清除内存中的 Cookie';
+  }
+  if (text.indexOf('Download load failed: ') === 0) {
+    return '下载列表读取失败：' + text.substring(22);
+  }
+  if (text.indexOf('Download save failed: ') === 0) {
+    return '下载保存失败：' + text.substring(22);
+  }
+  if (text.indexOf('Settings load failed: ') === 0) {
+    return '设置读取失败：' + text.substring(22);
+  }
+  if (text === 'No downloads to select') {
+    return '没有可选择的下载';
+  }
+  if (text === 'Scan needs app context') {
+    return '扫描需要应用上下文';
+  }
+  if (text === 'Clear failed downloads') {
+    return '清理失败的下载';
+  }
+  if (text === 'Bookmark name is empty') {
+    return '收藏名称为空';
+  }
+  if (text === 'Page loaded from cloud') {
+    return '已从云端加载页面';
+  }
+  if (text === 'ipb_member_id is empty') {
+    return 'ipb_member_id 为空';
+  }
+  if (text === 'ipb_pass_hash is empty') {
+    return 'ipb_pass_hash 为空';
+  }
+  if (text === 'No setting is selected') {
+    return '没有选中任何设置';
+  }
+  if (text === 'Search history cleared') {
+    return '搜索历史已清除';
+  }
+  if (text.indexOf('Export picker failed: ') === 0) {
+    return '导出选择器异常：' + text.substring(22);
+  }
+  if (text.indexOf('Import picker failed: ') === 0) {
+    return '导入选择器异常：' + text.substring(22);
+  }
+  if (text.indexOf('My Tags save failed: ') === 0) {
+    return '标签保存失败：' + text.substring(21);
+  }
+  if (text.indexOf('Cookie clear failed: ') === 0) {
+    return 'Cookie 清除失败：' + text.substring(21);
+  }
+  if (text === 'No filtered downloads') {
+    return '没有符合条件的下载';
+  }
+  if (text.indexOf('Save setting failed: ') === 0) {
+    return '设置保存失败：' + text.substring(21);
+  }
+  if (text.indexOf('My Tags load failed: ') === 0) {
+    return '标签读取失败：' + text.substring(21);
+  }
+  if (text.indexOf('Filter load warning: ') === 0) {
+    return '过滤器读取警告：' + text.substring(21);
+  }
+  if (text.indexOf('Cookie load failed: ') === 0) {
+    return 'Cookie 读取失败：' + text.substring(20);
+  }
+  if (text.indexOf('Cookie save failed: ') === 0) {
+    return 'Cookie 保存失败：' + text.substring(20);
+  }
+  if (text.indexOf('Invalid proxy host: ') === 0) {
+    return '代理主机无效：' + text.substring(20);
+  }
+  if (text.indexOf('Invalid proxy port: ') === 0) {
+    return '代理端口无效：' + text.substring(20);
+  }
+  if (text.indexOf('Clear cache failed: ') === 0) {
+    return '清除缓存失败：' + text.substring(20);
+  }
+  if (text.indexOf('Filter save failed: ') === 0) {
+    return '过滤器保存失败：' + text.substring(20);
+  }
+  if (text === 'Signed out in memory') {
+    return '已退出登录（仅内存）';
+  }
+  if (text === 'Clear search history') {
+    return '清除搜索历史';
+  }
+  if (text.indexOf('Export load failed: ') === 0) {
+    return '导出内容读取失败：' + text.substring(20);
+  }
+  if (text === 'Previews unavailable') {
+    return '预览不可用';
+  }
+  if (text.indexOf('Restored galleries: ') === 0) {
+    return '已恢复画廊：' + text.substring(20);
+  }
+  if (text.indexOf('Cache limit saved: ') === 0) {
+    return '缓存上限已保存：' + text.substring(19);
+  }
+  if (text.indexOf('Log export failed: ') === 0) {
+    return '日志导出失败：' + text.substring(19);
+  }
+  if (text === 'Preparing export...') {
+    return '正在准备导出…';
+  }
+  if (text.indexOf('Page load failed: ') === 0) {
+    return '页面加载失败：' + text.substring(18);
+  }
+  if (text === 'Duplicate bookmark') {
+    return '收藏重复';
+  }
+  if (text.indexOf('Load more failed: ') === 0) {
+    return '加载更多失败：' + text.substring(18);
+  }
+  if (text === 'Loading My Tags...') {
+    return '正在加载标签…';
+  }
+  if (text === 'Empty Cookie saved') {
+    return '已保存空 Cookie';
+  }
+  if (text.indexOf('Sign out failed: ') === 0) {
+    return '退出登录失败：' + text.substring(17);
+  }
+  if (text === 'Enter a tag first') {
+    return '请先输入标签';
+  }
+  if (text === 'Saving My Tags...') {
+    return '正在保存标签…';
+  }
+  if (text === 'Bookmark updated') {
+    return '收藏已更新';
+  }
+  if (text === 'Import cancelled') {
+    return '已取消导入';
+  }
+  if (text === 'Bookmark removed') {
+    return '收藏已删除';
+  }
+  if (text === 'Export cancelled') {
+    return '已取消导出';
+  }
+  if (text.indexOf('Cleared cache: ') === 0) {
+    return '已清除缓存：' + text.substring(15);
+  }
+  if (text.indexOf('Export failed: ') === 0) {
+    return '导出失败：' + text.substring(15);
+  }
+  if (text === 'Theme refreshed') {
+    return '主题已刷新';
+  }
+  if (text.indexOf('Import failed: ') === 0) {
+    return '导入失败：' + text.substring(15);
+  }
+  if (text === 'Search keyword') {
+    return '搜索关键词';
+  }
+  if (text === 'My Tags loaded') {
+    return '标签已加载';
+  }
+  if (text === 'Cookie cleared') {
+    return 'Cookie 已清除';
+  }
+  if (text === 'failed to load') {
+    return '加载失败';
+  }
+  if (text === 'Failed to load') {
+    return '加载失败';
+  }
+  if (text.indexOf('Save failed: ') === 0) {
+    return '保存失败：' + text.substring(13);
+  }
+  if (text.indexOf('Load failed: ') === 0) {
+    return '加载失败：' + text.substring(13);
+  }
+  if (text.indexOf('Read failed: ') === 0) {
+    return '读取失败：' + text.substring(13);
+  }
+  if (text === 'My Tags saved') {
+    return '标签已保存';
+  }
+  if (text === 'Clear failed') {
+    return '清除失败';
+  }
+  if (text === 'EhViewer HM') {
+    return 'EhViewer HM';
+  }
+  if (text.indexOf('Downloads: ') === 0) {
+    return '下载：' + text.substring(11);
+  }
+  if (text === 'Signed out') {
+    return '已退出登录';
+  }
+  if (text.indexOf('Exported ') === 0) {
+    return '已导出 ' + text.substring(9);
+  }
+  if (text === 'Exported') {
+    return '已导出';
+  }
+  if (text.indexOf('Cleared ') === 0) {
+    return '已清理 ' + text.substring(8);
+  }
+  if (text === 'Cleared') {
+    return '已清理';
+  }
+  if (text.indexOf('Remove ') === 0) {
+    return '移除 ' + text.substring(7);
+  }
+  if (text === 'Remove') {
+    return '移除';
+  }
+  if (text.indexOf('Added ') === 0) {
+    return '已添加 ' + text.substring(6);
+  }
+  if (text === 'Added') {
+    return '已添加';
+  }
+  return '';
+}
+
 export function zhText(text: string): string {
+  const legacy = legacyUiMessage(text);
+  if (legacy.length > 0) {
+    return legacy;
+  }
   const favoriteSlotMatch = /^Favorites\s+(\d+)$/.exec(text);
   if (favoriteSlotMatch !== null) {
     return '收藏夹 ' + favoriteSlotMatch[1];
