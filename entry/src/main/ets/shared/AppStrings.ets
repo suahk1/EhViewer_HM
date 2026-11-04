@@ -118,7 +118,41 @@ export function uiStatusText(text: string): string {
   return language === 'zh-TW' ? traditionalChineseText(translated) : translated;
 }
 
+
+function localizedFailureReason(reason: string): string {
+  const lower = reason.toLowerCase();
+  if (lower.indexOf('tls connection failed') >= 0) {
+    return 'TLS 连接失败，请检查代理或域名前置设置';
+  }
+  if (lower.indexOf('certificate') >= 0) {
+    return '证书校验失败，请检查代理是否替换了证书';
+  }
+  if (lower.indexOf('timed out') >= 0 || lower.indexOf('timeout') >= 0) {
+    return '请求超时，请检查网络';
+  }
+  if (lower.indexOf('dns') >= 0) {
+    return '域名解析失败，请检查 DNS 设置';
+  }
+  if (lower.indexOf('resolve') >= 0) {
+    return '域名解析失败，请检查 DNS 设置';
+  }
+  if (lower.indexOf('unreachable') >= 0 || lower.indexOf('network is down') >= 0) {
+    return '网络不可用，请检查连接';
+  }
+  if (lower.indexOf('blocked') >= 0 || lower.indexOf('banned') >= 0) {
+    return '站点拦截了请求，请检查账号或网络环境';
+  }
+  return '网络请求失败：' + reason;
+}
+
 function simplifiedUiStatusText(text: string): string {
+  // 加载失败的原因来自网络层原始信息，逐条落到中文，避免中英混排。
+  if (text.indexOf('Load failed: ') === 0) {
+    return '加载失败：' + localizedFailureReason(text.substring('Load failed: '.length));
+  }
+  if (text.indexOf('Load more failed: ') === 0) {
+    return '加载更多失败：' + localizedFailureReason(text.substring('Load more failed: '.length));
+  }
   // 种子相关提示：存文件 + 分享，要让人看懂下一步做什么
   if (text.indexOf('Torrent saved') === 0) {
     return '种子已保存，选迅雷打开即可（无需解析）';
