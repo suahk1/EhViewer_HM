@@ -2043,52 +2043,54 @@ export struct DownloadScene {
       message: cloudAvailable ?
         uiText('Delete from this device or from the cloud (all devices)?') :
         uiText('Delete') + ' ' + selected.length.toString() + ' ' + uiText('items') + '?',
+      // 按钮顺序固定：删除下载记录 → 删除本地图册 →（云端）→ 取消。
+      // 「取消」必须在最后，第一个位置留给真正的默认动作，避免误触。
       buttons: cloudAvailable ? [
         {
-          text: uiText('Cancel'),
-          color: themeSecondaryText()
-        },
-        {
-          text: uiText('Remove records only'),
+          text: uiText('Delete download records'),
           color: themeAccentTextColor()
         },
         {
-          text: uiText('Delete from this device'),
+          text: uiText('Delete local gallery'),
           color: themeAccentTextColor()
         },
         {
           text: uiText('Delete from cloud'),
           color: themeAccentTextColor()
-        }
-      ] : [
+        },
         {
           text: uiText('Cancel'),
           color: themeSecondaryText()
-        },
+        }
+      ] : [
         {
-          text: uiText('Remove records only'),
+          text: uiText('Delete download records'),
           color: themeAccentTextColor()
         },
         {
-          text: uiText('Delete from this device'),
+          text: uiText('Delete local gallery'),
           color: themeAccentTextColor()
+        },
+        {
+          text: uiText('Cancel'),
+          color: themeSecondaryText()
         }
       ]
     }).then((data) => {
       this.deleteConfirmationDialogOpen = false;
       if (!cloudAvailable) {
-        if (data.index === 1) {
+        if (data.index === 0) {
           this.removeSelectedRecordsOnly(selected);
-        } else if (data.index === 2) {
+        } else if (data.index === 1) {
           this.removeSelectedDownloads(selected);
         }
         return;
       }
-      if (data.index === 1) {
+      if (data.index === 0) {
         this.removeSelectedRecordsOnly(selected);
-      } else if (data.index === 2) {
+      } else if (data.index === 1) {
         this.deleteSelectedLocalOnly(selected);
-      } else if (data.index === 3) {
+      } else if (data.index === 2) {
         this.deleteSelectedFromCloud(selected);
       }
     }).catch(() => {
@@ -2295,13 +2297,14 @@ export struct DownloadScene {
     this.getUIContext().getPromptAction().showDialog({
       title: uiText('Remove'),
       message: uiText('Remove this local gallery record and delete its files?'),
+      // 与多选删除保持一致：动作在前、取消在最后。
       buttons: [
-        { text: uiText('Cancel'), color: themeSecondaryText() },
-        { text: uiText('Remove'), color: themeAccentTextColor() }
+        { text: uiText('Delete local gallery'), color: themeAccentTextColor() },
+        { text: uiText('Cancel'), color: themeSecondaryText() }
       ]
     }).then((data) => {
       this.deleteConfirmationDialogOpen = false;
-      if (data.index !== 1) {
+      if (data.index !== 0) {
         return;
       }
       this.closeDetail();

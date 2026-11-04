@@ -55,18 +55,38 @@ function currentUiLanguage(): string {
     cachedUiLanguage = language;
     return cachedUiLanguage;
   }
+  // 注意：这里以前把「取不到系统语言」直接当成 English 并永久缓存。
+  // 结果是中文系统上只要一次取语言失败（启动早期、i18n 未就绪），
+  // 之后所有走 uiText 的文案都会锁死成英文，而界面其它硬编码中文不变，
+  // 看起来就是「中文界面里突然冒出英文单词」。
   let resolvedLanguage = 'English';
+  let resolved = false;
   try {
     const systemLanguage = i18n.System.getSimplifiedLanguage();
+    const lower = systemLanguage.toLowerCase();
     const supportedLanguages: Array<string> = ['zh-Hans', 'zh-Hant'];
     const matchedLanguage = i18n.I18NUtil.getBestMatchLocale(systemLanguage, supportedLanguages);
-    if (matchedLanguage === 'zh-Hans') {
-      resolvedLanguage = 'zh-CN';
-    }
-    if (matchedLanguage === 'zh-Hant') {
+    const traditional = matchedLanguage === 'zh-Hant' || lower.indexOf('zh-hant') === 0 ||
+      lower === 'zh-tw' || lower === 'zh-hk' || lower === 'zh-mo';
+    if (traditional) {
       resolvedLanguage = 'zh-TW';
+      resolved = true;
+    } else if (matchedLanguage === 'zh-Hans' || lower.indexOf('zh') === 0) {
+      // 系统可能给 'zh'、'zh-CN'、'zh-Hans-CN' 等形态，只要以 zh 开头就按中文处理，
+      // 不能只认 getBestMatchLocale 的精确返回值。
+      resolvedLanguage = 'zh-CN';
+      resolved = true;
+    } else if (lower.length > 0) {
+      resolvedLanguage = 'English';
+      resolved = true;
     }
   } catch (error) {
+  }
+  if (!resolved && cachedUiLanguage.length > 0) {
+    // 取不到系统语言时沿用上次判定，绝不把中文用户打成英文。
+    cachedUiLanguageRevision = normalizedRevision;
+    cachedUiLanguageSetting = language;
+    return cachedUiLanguage;
   }
   cachedUiLanguageRevision = normalizedRevision;
   cachedUiLanguageSetting = language;
@@ -1847,6 +1867,8 @@ export function zhText(text: string): string {
     case 'Server removed gallery': return '服务器无存档，无法下载';
     case 'Files missing': return '文件缺失';
     case 'Remove records only': return '仅删记录（保留文件）';
+    case 'Delete download records': return '删除下载记录';
+    case 'Delete local gallery': return '删除本地图册';
     case 'Download quota reached': return '下载配额已满，请稍后重试';
     case 'Too many requests': return '请求过于频繁，请稍后重试';
     case 'Access denied for download': return '访问被拒，请检查登录状态';
