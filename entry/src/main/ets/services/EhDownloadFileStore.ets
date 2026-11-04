@@ -423,6 +423,23 @@ export class EhDownloadFileStore {
   // 供导入、对账、阅读共用，避免各处各写一套查找规则。
   resolveGalleryDirectory(context: common.UIAbilityContext, gid: number, title: string, archiveUri: string): string {
     if (archiveUri.length > 0 && isDirectory(archiveUri)) {
+      // 目录存在不代表它属于这条记录：迁移、复制、按标题重建目录之后，
+      // archiveUri 可能指向另一本。先验身份（gid 前缀或标题一致）再信它，
+      // 对不上就按 gid/标题在根里另找，找不到才退回原路径。
+      const base = pathBaseName(archiveUri);
+      const gidMatched = gid > 0 && base.startsWith(gid.toString() + '-');
+      const titleMatched = directoryNameMatches(base, sanitizePathSegment(title));
+      if (gidMatched || titleMatched || title.length === 0) {
+        return archiveUri;
+      }
+      const byIdentityGid = this.findGalleryDirectoryByGid(context, gid);
+      if (byIdentityGid.length > 0) {
+        return byIdentityGid;
+      }
+      const byIdentityTitle = this.findGalleryDirectoryByTitle(context, title);
+      if (byIdentityTitle.length > 0) {
+        return byIdentityTitle;
+      }
       return archiveUri;
     }
     if (archiveUri.length > 0) {

@@ -3378,6 +3378,9 @@ export struct DownloadScene {
               this.applyLocalMeta(this.localDetailItem(), pages, bytes);
             }
           })
+            // 详情面板按 gid 绑定身份：换一本图册必须重建组件，
+            // 否则 @Prop 更新时机一慢，页面还停在上一本的预览与页数上（货不对板的另一半）。
+            .id('local-detail-' + this.localDetailGid.toString())
             .width(this.useSplitLayout() ? this.splitSidePaneWidth() : '100%')
             .height('100%')
             .position({ x: this.useSplitLayout() ? this.splitListPaneWidth() + 1 : 0, y: 0 })

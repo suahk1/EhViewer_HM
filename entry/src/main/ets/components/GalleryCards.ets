@@ -135,6 +135,35 @@ export struct GalleryListRow {
     if (next !== undefined) {
       this.gallery = next as GalleryInfo;
     }
+    // 回调不是状态变量，复用池取出的节点会**保留上一次绑定的闭包**。
+    // 只重设 gallery 时，显示的标题是对的、点下去执行的却是该节点上次承载的条目，
+    // 表现为「随机货不对板」。这类数据必须自己在 aboutToReuse 里从 params 重设。
+    const reader = params.onOpenReader;
+    if (reader !== undefined) {
+      this.onOpenReader = reader as (gallery: GalleryInfo) => void;
+    }
+    const detail = params.onOpenDetail;
+    if (detail !== undefined) {
+      this.onOpenDetail = detail as (gallery: GalleryInfo) => void;
+    }
+    const longPress = params.onLongPress;
+    if (longPress !== undefined) {
+      this.onLongPress = longPress as (gallery: GalleryInfo) => void;
+    }
+    // 角标与进度也一并重设，避免复用后还挂着上一条的状态。
+    this.selected = params.selected === true;
+    this.translateTitle = params.translateTitle === true;
+    const priority = params.translationPriority;
+    if (typeof priority === 'number') {
+      this.translationPriority = priority;
+    }
+    this.localOnly = params.localOnly === true;
+    this.cloudOnly = params.cloudOnly === true;
+    this.cloudGone = params.cloudGone === true;
+    const progress = params.progressLabel;
+    if (progress !== undefined) {
+      this.progressLabel = progress as string;
+    }
   }
   @Prop selected: boolean = false;
   @Prop translateTitle: boolean = false;
@@ -814,6 +843,28 @@ export struct GalleryThumbCard {
     if (next !== undefined) {
       this.gallery = next as GalleryInfo;
     }
+    // 同上：回调不走状态机制，必须显式重设，否则点击落到该节点上一次的条目上。
+    const reader = params.onOpenReader;
+    if (reader !== undefined) {
+      this.onOpenReader = reader as (gallery: GalleryInfo) => void;
+    }
+    const detail = params.onOpenDetail;
+    if (detail !== undefined) {
+      this.onOpenDetail = detail as (gallery: GalleryInfo) => void;
+    }
+    const longPress = params.onLongPress;
+    if (longPress !== undefined) {
+      this.onLongPress = longPress as (gallery: GalleryInfo) => void;
+    }
+    this.selected = params.selected === true;
+    this.translateTitle = params.translateTitle === true;
+    const priority = params.translationPriority;
+    if (typeof priority === 'number') {
+      this.translationPriority = priority;
+    }
+    this.localOnly = params.localOnly === true;
+    this.cloudOnly = params.cloudOnly === true;
+    this.cloudGone = params.cloudGone === true;
     this.syncThumbnailAspectRatio();
   }
   @Prop selected: boolean = false;
