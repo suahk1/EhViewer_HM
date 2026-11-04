@@ -455,6 +455,10 @@ export class EhDownloadFileStore {
 
   // 在指定根目录里按 gid 前缀、再按标题找图册目录。
   private findGalleryDirectoryInRoot(root: string, gid: number, title: string): string {
+    // 根目录可能还没创建（换过下载位置、刚重装），先判存在，避免刷 ENOENT 日志。
+    if (root.length === 0 || !isDirectory(root)) {
+      return '';
+    }
     try {
       const names = fs.listFileSync(root);
       const prefix = gid > 0 ? gid.toString() + '-' : '';
