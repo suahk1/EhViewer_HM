@@ -413,6 +413,9 @@ export struct DownloadScene {
 
   aboutToAppear(): void {
     this.downloadSceneActive = true;
+    // 上次离开时若确认层还开着（切 tab、被系统回收），这里清掉，避免下次进来直接弹。
+    this.deleteConfirmVisible = false;
+    this.deleteConfirmationDialogOpen = false;
     applyAppChromeImmersiveMode();
     this.restoreEmbeddedContinuationIfPresent();
     this.floatingActionSideController.syncFromSettings();
@@ -478,6 +481,11 @@ export struct DownloadScene {
   }
 
   private handleSystemBack(): boolean {
+    // 自绘确认层要先吃掉返回，否则会直接退出页面、状态还留着。
+    if (this.deleteConfirmVisible) {
+      this.closeDeleteConfirm();
+      return true;
+    }
     if (this.sortPanelVisible) {
       this.sortPanelVisible = false;
       return true;
