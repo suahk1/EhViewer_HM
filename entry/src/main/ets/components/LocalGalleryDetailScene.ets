@@ -459,31 +459,28 @@ export struct LocalGalleryDetailScene {
         .backgroundColor(themeSurface())
         .borderRadius(uiRadius(8))
       } else {
-        Scroll() {
-          Row({ space: 8 }) {
-            ForEach(this.previewPaths, (path: string, index: number) => {
-              Column({ space: 4 }) {
-                GalleryThumb({
-                  url: path,
-                  widthValue: 78,
-                  heightValue: 104,
-                  radiusValue: uiRadius(6)
-                })
-                Text((index + 1).toString())
-                  .fontSize(11)
-                  .fontColor(themeTertiaryText())
-              }
-              .onClick(() => {
-                this.onRead(index);
+        // 预览图与云端详情页保持一致：竖向自动换行，不做横向滚动。
+        Flex({ wrap: FlexWrap.Wrap, justifyContent: FlexAlign.Start }) {
+          ForEach(this.previewPaths, (path: string, index: number) => {
+            Column({ space: 4 }) {
+              GalleryThumb({
+                url: path,
+                widthValue: 78,
+                heightValue: 104,
+                radiusValue: uiRadius(6)
               })
-            }, (path: string) => path)
-          }
-          .padding({ top: 2, bottom: 2 })
+              Text((index + 1).toString())
+                .fontSize(11)
+                .fontColor(themeTertiaryText())
+            }
+            .margin({ right: 8, bottom: 8 })
+            .onClick(() => {
+              this.onRead(index);
+            })
+          }, (path: string) => path)
         }
         .width('100%')
-        .scrollable(ScrollDirection.Horizontal)
-        .scrollBar(BarState.Off)
-        .align(Alignment.Start)
+        .padding({ top: 2, bottom: 2 })
       }
     }
     .width('100%')

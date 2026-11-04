@@ -439,6 +439,51 @@ export class EhDownloadFileStore {
     if (byTitle.length > 0) {
       return byTitle;
     }
+    // 目录被放在另一侧根目录时也要能认出来：设置里选的是沙箱，用户却把图册拷进
+    // 公共下载目录（或反之），只查一个根就会把整批记录判成「文件缺失」。
+    const primary = normalizeDownloadLocation(appSettingsStore.getValue('download_location', DOWNLOAD_LOCATION_APP_FILES));
+    const altLocation = primary === DOWNLOAD_LOCATION_DOWNLOADS ? DOWNLOAD_LOCATION_APP_FILES : DOWNLOAD_LOCATION_DOWNLOADS;
+    const altRoot = this.rootForLocation(context, altLocation);
+    if (altRoot.length > 0 && altRoot !== this.downloadRoot(context)) {
+      const altHit = this.findGalleryDirectoryInRoot(altRoot, gid, title);
+      if (altHit.length > 0) {
+        return altHit;
+      }
+    }
+    return '';
+  }
+
+  // 在指定根目录里按 gid 前缀、再按标题找图册目录。
+  private findGalleryDirectoryInRoot(root: string, gid: number, title: string): string {
+    try {
+      const names = fs.listFileSync(root);
+      const prefix = gid > 0 ? gid.toString() + '-' : '';
+      if (prefix.length > 0) {
+        let best = '';
+        for (let i = 0; i < names.length; i++) {
+          const path = root + '/' + names[i];
+          if (names[i].startsWith(prefix) && isDirectory(path) && path.length > best.length) {
+            best = path;
+          }
+        }
+        if (best.length > 0) {
+          return best;
+        }
+      }
+      const target = sanitizePathSegment(title);
+      if (target.length > 0) {
+        for (let i = 0; i < names.length; i++) {
+          if (directoryNameMatches(names[i], target)) {
+            const path = root + '/' + names[i];
+            if (isDirectory(path)) {
+              return path;
+            }
+          }
+        }
+      }
+    } catch (error) {
+      return '';
+    }
     return '';
   }
 
