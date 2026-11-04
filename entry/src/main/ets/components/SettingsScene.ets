@@ -250,6 +250,8 @@ export struct SettingsScene {
   @State signedIn: boolean = ehCookieStore.hasCookies();
   @State statusText: string = '';
   @State blockingBusyVisible: boolean = false;
+  // 长任务在跑标记：重复点击直接忽略，避免清理类操作被执行两次（R8）
+  private runningAction: string = '';
   @State blockingBusyMessage: string = 'Loading...';
   @State blockingBusyProgressText: string = '';
   @State blockingBusyProgressCurrent: number = -1;
@@ -1509,6 +1511,10 @@ export struct SettingsScene {
   }
 
   private checkForUpdatesManually(): void {
+    if (this.runningAction.length > 0) {
+      return;
+    }
+    this.runningAction = 'update';
     // 仓库地址还是占位值时，别去打 GitHub（必然 404），直接说明更新源未配置。
     if (!EH_REPOSITORY_CONFIGURED) {
       const pending = uiText('Update source is not configured yet');
@@ -1526,10 +1532,12 @@ export struct SettingsScene {
         this.statusText = uiText('New version found') + ': ' + result.latest.tagName;
       } else {
         this.statusText = result.message;
+        this.runningAction = '';
         this.showResult('Check for updates', result.message);
       }
     }).catch((error: Error) => {
       this.statusText = 'Check for updates failed: ' + errorText(error);
+      this.runningAction = '';
       this.showResult('Check for updates', this.statusText);
     });
   }
@@ -1922,6 +1930,10 @@ export struct SettingsScene {
   }
 
   private restoreDownloadItems(): void {
+    if (this.runningAction.length > 0) {
+      return;
+    }
+    this.runningAction = 'scan';
     const context = getAbilityContext();
     if (context === undefined) {
       this.statusText = 'Restore download items needs an ability context';
@@ -1943,6 +1955,7 @@ export struct SettingsScene {
       const result: DownloadRestoreResult = await restoreDownloadedItemsAndArchives(context,
         this.currentGallerySite(), downloadsAccess);
       this.hideBlockingBusy();
+      this.runningAction = '';
       const parts: string[] = [];
       parts.push(uiText('Added') + ' ' + result.added.toString());
       parts.push(uiText('Already registered') + ' ' + result.skipped.toString());
@@ -1971,6 +1984,7 @@ export struct SettingsScene {
       }
     }).catch((error: Error) => {
       this.hideBlockingBusy();
+      this.runningAction = '';
       this.showFloatingStatus('Restore downloads failed: ' + errorText(error));
     });
   }
@@ -2352,6 +2366,10 @@ export struct SettingsScene {
   }
 
   private cleanDownloadRedundancy(): void {
+    if (this.runningAction.length > 0) {
+      return;
+    }
+    this.runningAction = 'clean';
     const context = getAbilityContext();
     if (context === undefined) {
       this.showFloatingStatus('Clean redundancy needs an ability context');
@@ -2385,6 +2403,7 @@ export struct SettingsScene {
       const bytes = mergedDirs.bytes + orphans.bytes;
       this.settingsRenderRevision++;
       this.hideBlockingBusy();
+      this.runningAction = '';
       if (mergedRecords <= 0 && directories <= 0 && files <= 0) {
         this.showResult('Clean redundancy', uiText('No redundant downloaded galleries'));
         return;
@@ -2395,11 +2414,16 @@ export struct SettingsScene {
         files.toString() + ' ' + uiText('files') + ' · ' + downloadSizeText(bytes));
     }).catch((error: Error) => {
       this.hideBlockingBusy();
+      this.runningAction = '';
       this.showResult('Clean redundancy', 'Failed: ' + errorText(error));
     });
   }
 
   private refreshDownloadPathCache(): void {
+    if (this.runningAction.length > 0) {
+      return;
+    }
+    this.runningAction = 'pathcache';
     const context = getAbilityContext();
     if (context === undefined) {
       this.statusText = 'Download path cache needs an ability context';
@@ -2422,11 +2446,13 @@ export struct SettingsScene {
         this.statusText = 'Download path cache cleared: ' + updated.toString() + ' items, ' +
           downloadSizeText(totalBytes);
         this.hideBlockingBusy();
+        this.runningAction = '';
         this.showResult('Clear download path cache', this.statusText);
       });
     }).catch((error: Error) => {
       this.statusText = 'Clear download path cache failed: ' + errorText(error);
       this.hideBlockingBusy();
+      this.runningAction = '';
       this.showResult('Clear download path cache', this.statusText);
     });
   }
