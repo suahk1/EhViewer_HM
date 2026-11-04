@@ -2188,7 +2188,8 @@ export struct DownloadScene {
     this.openDetailNow(item);
   }
 
-  private openDetailNow(item: DownloadInfo): void {
+  private openDetailNow(rawItem: DownloadInfo): void {
+    const item = this.healedDownloadItem(rawItem);
     this.restoreDetailWithFade = false;
     this.activeSplitPane = SPLIT_PANE_FOCUS_RIGHT;
     this.showDetail = true;
@@ -2212,6 +2213,20 @@ export struct DownloadScene {
     this.saveNavigationCache();
   }
 
+  // 按 gid 取当前下载条目；取不到时退回渲染时传入的那条。
+  private itemByGid(gid: number, fallback: DownloadInfo): DownloadInfo {
+    const cached = this.downloadItemsByGid.get(gid);
+    if (cached !== undefined) {
+      return cached;
+    }
+    for (let i = 0; i < this.items.length; i++) {
+      if (this.items[i].gid === gid) {
+        return this.items[i];
+      }
+    }
+    return fallback;
+  }
+
   private localDetailItem(): DownloadInfo {
     const cached = this.downloadItemsByGid.get(this.localDetailGid);
     if (cached !== undefined) {
@@ -2225,7 +2240,33 @@ export struct DownloadScene {
     return createEmptyDownloadInfo();
   }
 
-  private openLocalReader(item: DownloadInfo, index: number): void {
+  // 状态可能是旧值（迁移/换根后目录其实还在）。打开前按真实目录自愈一次：
+  // 目录能解析出来就把 state 刷成完成并更新路径，避免"文件明明在却报缺失"（R10 复发形态）。
+  private healedDownloadItem(item: DownloadInfo): DownloadInfo {
+    if (item.state !== DownloadState.Missing) {
+      return item;
+    }
+    const context = getAbilityContext();
+    if (context === undefined) {
+      return item;
+    }
+    const directory = ehDownloadFileStore.resolveGalleryDirectory(context, item.gid, item.title, item.archiveUri);
+    if (directory.length === 0) {
+      return item;
+    }
+    ehDownloadStore.setState(item.gid, DownloadState.Finish);
+    ehDownloadStore.setStorage(item.gid, directory, item.fileSize);
+    this.persistDownloads();
+    for (let i = 0; i < this.visibleItems.length; i++) {
+      if (this.visibleItems[i].gid === item.gid) {
+        return this.visibleItems[i];
+      }
+    }
+    return item;
+  }
+
+  private openLocalReader(rawItem: DownloadInfo, index: number): void {
+    const item = this.healedDownloadItem(rawItem);
     if (item.gid <= 0 || item.state === DownloadState.Missing) {
       this.showStatusHint(uiText('Files missing'), 1800);
       return;
@@ -2471,6 +2512,16 @@ export struct DownloadScene {
     .padding({ left: 8, right: 8, top: 4 })
   }
 
+  // 下载页角标口径（仅本页）：有云端身份 → 云朵（含下载中、已下载）；
+  // 只有本地文件 → 手机；云端记录在但两边都缺 → 云朵+斜线（cloudGone）。
+  // 不改动其它页面的角标（红线：角标语义只作用于下载界面）。
+  private isCloudIdentityItem(item: DownloadInfo): boolean {
+    if (item.token === undefined || item.token.length === 0) {
+      return false;
+    }
+    return !this.isCloudGoneItem(item);
+  }
+
   private isLocalOnlyItem(item: DownloadInfo): boolean {
     // 无档案本地图档：靠目录名扫描识别，db / 服务器均无记录（token 为空）。
     return item.token === undefined || item.token.length === 0;
@@ -2506,16 +2557,18 @@ export struct DownloadScene {
           translateTitle: this.translationEnabled,
           translationPriority: this.translationPriorityFor(index),
           localOnly: this.isLocalOnlyItem(item),
-          cloudOnly: this.isCloudOnlyMissing(item),
+          cloudOnly: this.isCloudIdentityItem(item),
           cloudGone: this.isCloudGoneItem(item),
           onLongPress: (pressed: GalleryInfo) => {
             this.toggleDownloadSelection(pressed.gid);
           },
-          onOpenReader: (_pressed: GalleryInfo) => {
-            this.handleDownloadCardTap(item, true);
+          // 卡片会被复用，闭包里的 item 可能是旧的；一律按回调给的 gid 重新取当前条目，
+          // 否则删/改序后会「点第一条打开第三条」（货不对板）。
+          onOpenReader: (pressed: GalleryInfo) => {
+            this.handleDownloadCardTap(this.itemByGid(pressed.gid, item), true);
           },
-          onOpenDetail: (_pressed: GalleryInfo) => {
-            this.handleDownloadCardTap(item, false);
+          onOpenDetail: (pressed: GalleryInfo) => {
+            this.handleDownloadCardTap(this.itemByGid(pressed.gid, item), false);
           }
         })
           .width('100%')
@@ -2531,17 +2584,19 @@ export struct DownloadScene {
           translateTitle: this.translationEnabled,
           translationPriority: this.translationPriorityFor(index),
           localOnly: this.isLocalOnlyItem(item),
-          cloudOnly: this.isCloudOnlyMissing(item),
+          cloudOnly: this.isCloudIdentityItem(item),
           cloudGone: this.isCloudGoneItem(item),
           progressLabel: this.downloadRowProgressLabel(item),
           onLongPress: (pressed: GalleryInfo) => {
             this.toggleDownloadSelection(pressed.gid);
           },
-          onOpenReader: (_pressed: GalleryInfo) => {
-            this.handleDownloadCardTap(item, true);
+          // 卡片会被复用，闭包里的 item 可能是旧的；一律按回调给的 gid 重新取当前条目，
+          // 否则删/改序后会「点第一条打开第三条」（货不对板）。
+          onOpenReader: (pressed: GalleryInfo) => {
+            this.handleDownloadCardTap(this.itemByGid(pressed.gid, item), true);
           },
-          onOpenDetail: (_pressed: GalleryInfo) => {
-            this.handleDownloadCardTap(item, false);
+          onOpenDetail: (pressed: GalleryInfo) => {
+            this.handleDownloadCardTap(this.itemByGid(pressed.gid, item), false);
           }
         })
           .width('100%')
