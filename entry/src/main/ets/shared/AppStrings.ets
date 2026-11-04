@@ -430,7 +430,7 @@ function simplifiedUiStatusText(text: string): string {
     return '下载：' + text.substring('Downloads: '.length);
   }
   if (text.indexOf('Load failed: ') === 0) {
-    return '加载失败：' + text.substring('Load failed: '.length);
+    return '加载失败：' + localizedFailureReason(text.substring('Load failed: '.length));
   }
   if (text.indexOf('History load failed: ') === 0) {
     return '历史加载失败：' + text.substring('History load failed: '.length);
@@ -1097,9 +1097,6 @@ function legacyUiMessage(text: string): string {
   if (text === 'Duplicate bookmark') {
     return '收藏重复';
   }
-  if (text.indexOf('Load more failed: ') === 0) {
-    return '加载更多失败：' + text.substring(18);
-  }
   if (text === 'Loading My Tags...') {
     return '正在加载标签…';
   }
@@ -1156,9 +1153,6 @@ function legacyUiMessage(text: string): string {
   }
   if (text.indexOf('Save failed: ') === 0) {
     return '保存失败：' + text.substring(13);
-  }
-  if (text.indexOf('Load failed: ') === 0) {
-    return '加载失败：' + text.substring(13);
   }
   if (text.indexOf('Read failed: ') === 0) {
     return '读取失败：' + text.substring(13);
