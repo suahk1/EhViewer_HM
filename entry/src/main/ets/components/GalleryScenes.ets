@@ -535,10 +535,10 @@ export struct GalleryListScene {
     }
   }
 
-  // 搜索场景是在本组件内部切视图，Index 的路由没变，底坞不会自己让位。
-  // 这里单独广播：进搜索结果收起底坞，退出再放回来。
+  // 搜索结果不再是「覆盖层」：底坞必须保留，否则用户在搜索里只能靠侧边返回退出，
+  // 找不到主页入口。列表底部留白由 appDockBottomGap 统一避让，不会被胶囊压住。
   private syncSearchSceneChrome(): void {
-    reportAppOverlayHidden(this.showSearchResultScene);
+    reportAppOverlayHidden(false);
   }
 
   private presentSearchResultScene(): void {
