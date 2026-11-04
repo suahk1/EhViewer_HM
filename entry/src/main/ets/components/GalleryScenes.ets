@@ -1885,7 +1885,9 @@ export struct GalleryListScene {
     const frame = this.nestedSearchFrames.pop();
     if (frame !== undefined) {
       this.searchResultDraft = cloneSearchResultDraft(frame.draft);
-      if (frame.draft.keyword.trim().length > 0) {
+      // 只在本场景确实是搜索结果列表时同步关键词；主页等根场景不能被写上搜索词
+      // （否则标题会变成搜索词，例如「AI」）。
+      if (frame.draft.keyword.trim().length > 0 && (this.isSearchResultScene || this.searchSubmitted)) {
         this.keyword = frame.draft.keyword;
         this.searchMode = frame.draft.mode;
         this.searchCategory = frame.draft.category;
@@ -1905,12 +1907,18 @@ export struct GalleryListScene {
       return;
     }
     if (!this.isSearchResultScene && this.keyword.trim().length > 0) {
-      // 本场景自己就是上一层搜索结果列表：关掉压上来的子搜索即可，不能把整页退回输入框。
+      // 关掉最后一层搜索：回到根列表，并把搜索词清掉，
+      // 否则根页标题会变成上一个关键词（例如「ai」）。
       this.showSearchResultScene = false;
       this.searchResultDraft = createEmptySearchResultDraft();
+      this.keyword = '';
+      this.searchSubmitted = false;
+      this.searchMode = listModeForRoute(this.sourceRoute);
       this.searchResultSceneRevision++;
+      this.clearSearchOrigin();
       this.restoreBackHandler();
       this.saveNavigationCache();
+      this.loadListPage(0);
       return;
     }
     this.showSearchResultScene = false;
