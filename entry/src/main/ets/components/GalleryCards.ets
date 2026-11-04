@@ -1062,22 +1062,13 @@ struct GalleryStatusBadges {
   build() {
     Row({ space: 3 }) {
       if (this.hasDownload()) {
-        Stack({ alignContent: Alignment.Center }) {
-            if (this.isCloudOnly()) {
-              SymbolGlyph($r('sys.symbol.cloud'))
-                .fontSize(15)
-                .fontColor([themeOnPrimaryText()])
-            } else {
-              SymbolGlyph($r('sys.symbol.arrow_down'))
-                .fontSize(15)
-                .fontColor([themeOnPrimaryText()])
-            }
+        // 角标语义固定三档，不允许再用「下箭头」冒充云端：
+        // 本地有文件=手机图标，仅云端记录=云朵，记录与文件都缺=云朵加斜线。
+        if (this.isCloudOnly()) {
+          CloudStateBadge({ gone: false })
+        } else {
+          LocalOnlyBadge()
         }
-        .width(22)
-        .height(22)
-        .backgroundColor(themeDownloadStateActiveColor())
-        .borderRadius(11)
-        .accessibilityText(uiText('In download list'))
       }
       if (this.isFavorite()) {
         Stack({ alignContent: Alignment.Center }) {
@@ -1106,6 +1097,14 @@ struct CloudStateBadge {
       SymbolGlyph($r('sys.symbol.cloud'))
         .fontSize(15)
         .fontColor([themeOnPrimaryText()])
+      if (this.gone) {
+        // 斜线：云端记录在，但本地与云端都取不到内容。
+        Row()
+          .width(16)
+          .height(2)
+          .backgroundColor(themeOnPrimaryText())
+          .rotate({ angle: -45 })
+      }
     }
     .width(22)
     .height(22)
