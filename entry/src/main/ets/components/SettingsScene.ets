@@ -1335,6 +1335,7 @@ export struct SettingsScene {
 
   private testTranslationProvider(): void {
     this.statusText = uiText('Testing translation...');
+    this.showFloatingStatus(uiText('Testing translation...'));
     ehTranslationService.clearCache();
     ehTranslationService.testTranslation('Hello, world.').then((translated: string) => {
       this.statusText = uiText('Translation test succeeded') + ': ' + translated;
@@ -1516,6 +1517,7 @@ export struct SettingsScene {
       return;
     }
     this.statusText = uiText('Checking for updates...');
+    this.showFloatingStatus(uiText('Checking for updates...'));
     releaseUpdateChecker.checkLatestRelease().then((result: UpdateCheckResult) => {
       if (result.hasUpdate && result.latest !== null) {
         this.updateCurrentVersion = result.current.versionName;
@@ -1929,6 +1931,8 @@ export struct SettingsScene {
       DOWNLOAD_LOCATION_APP_FILES));
     this.statusText = currentLocation === DOWNLOAD_LOCATION_APP_FILES ? 'Preparing public Downloads access...' :
       'Scanning downloaded folders...';
+    // 点击即刻出「扫描中」：后面可能先弹系统权限框/目录授权，没有即时反馈用户会反复点。
+    this.showBlockingBusy('Scanning downloaded folders...');
     Promise.resolve().then(async () => {
       let downloadsAccess = true;
       if (currentLocation === DOWNLOAD_LOCATION_APP_FILES) {
@@ -2353,6 +2357,9 @@ export struct SettingsScene {
       this.showFloatingStatus('Clean redundancy needs an ability context');
       return;
     }
+    // 先出"清理中"，再干活：查重与孤儿目录清理是同步树遍历，
+    // 不给即时反馈用户会以为没点到而反复点（B-02）。
+    this.showBlockingBusy('Cleaning redundant files...');
     ehDownloadStore.load(context).then(async () => {
       // 1) 记录级查重：同一图册（同 gid 或同标题）只留一条，云端身份与本地目录合并。
       const mergedRecords = ehDownloadStore.dedupeRecords();
@@ -2377,6 +2384,7 @@ export struct SettingsScene {
       const files = mergedDirs.files + orphans.files;
       const bytes = mergedDirs.bytes + orphans.bytes;
       this.settingsRenderRevision++;
+      this.hideBlockingBusy();
       if (mergedRecords <= 0 && directories <= 0 && files <= 0) {
         this.showResult('Clean redundancy', uiText('No redundant downloaded galleries'));
         return;
@@ -2386,6 +2394,7 @@ export struct SettingsScene {
         directories.toString() + ' ' + uiText('duplicate folders') + ' · ' +
         files.toString() + ' ' + uiText('files') + ' · ' + downloadSizeText(bytes));
     }).catch((error: Error) => {
+      this.hideBlockingBusy();
       this.showResult('Clean redundancy', 'Failed: ' + errorText(error));
     });
   }
@@ -2396,6 +2405,7 @@ export struct SettingsScene {
       this.statusText = 'Download path cache needs an ability context';
       return;
     }
+    this.showBlockingBusy('Clearing download path cache...');
     ehDownloadStore.load(context).then(() => {
       const items = ehDownloadStore.getItems();
       let updated = 0;
@@ -2411,10 +2421,12 @@ export struct SettingsScene {
       return ehDownloadStore.save(context).then(() => {
         this.statusText = 'Download path cache cleared: ' + updated.toString() + ' items, ' +
           downloadSizeText(totalBytes);
+        this.hideBlockingBusy();
         this.showResult('Clear download path cache', this.statusText);
       });
     }).catch((error: Error) => {
       this.statusText = 'Clear download path cache failed: ' + errorText(error);
+      this.hideBlockingBusy();
       this.showResult('Clear download path cache', this.statusText);
     });
   }

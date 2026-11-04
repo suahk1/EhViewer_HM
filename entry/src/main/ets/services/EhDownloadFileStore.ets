@@ -980,15 +980,17 @@ export class EhDownloadFileStore {
       return appItems;
     }
 
-    const merged: RestoredDownloadGallery[] = [];
-    for (let i = 0; i < appItems.length; i++) {
-      merged.push(appItems[i]);
-    }
-
+    // 只登记，不搬运：公共目录里的图册按原路径补进列表，文件留在原地。
+    // 旧实现会 copyDirectoryTree + removeDirectoryTree 把整棵树搬进沙箱，
+    // 50 册就要 20 秒以上并改动用户文件（B-01 卡死主因）。
     for (let i = 0; i < publicItems.length; i++) {
-      this.mergePublicDownloadIntoApp(appRoot, merged, publicItems[i]);
+      const item = publicItems[i];
+      if (item.gallery.gid > 0 && restoredIndexByGid(appItems, item.gallery.gid) >= 0) {
+        continue;
+      }
+      appItems.push(item);
     }
-    return merged;
+    return appItems;
   }
 
   private scanPublicDownloadedGalleries(context: common.UIAbilityContext): RestoredDownloadGallery[] {
@@ -997,37 +999,6 @@ export class EhDownloadFileStore {
       return this.scanRestoredDownloadRoot(publicRoot);
     } catch (error) {
       return [];
-    }
-  }
-
-  private mergePublicDownloadIntoApp(appRoot: string, appItems: RestoredDownloadGallery[],
-    publicItem: RestoredDownloadGallery): void {
-    // 本地图档没有 gid，不能按 gid 匹配，直接追加，避免误删同名的其他目录。
-    const existingIndex = publicItem.gallery.gid > 0 ?
-      restoredIndexByGid(appItems, publicItem.gallery.gid) : -1;
-    if (existingIndex >= 0 && appItems[existingIndex].fileSize >= publicItem.fileSize) {
-      removeDirectoryTree(publicItem.directory);
-      return;
-    }
-
-    const target = uniqueChildPath(appRoot, pathBaseName(publicItem.directory));
-
-    const copied = copyDirectoryTree(publicItem.directory, target);
-    if (copied.files <= 0) {
-      return;
-    }
-    removeDirectoryTree(publicItem.directory);
-    if (existingIndex >= 0) {
-      removeDirectoryTree(appItems[existingIndex].directory);
-    }
-    const migrated = this.restoredItemFromDirectory(target, true, publicItem.directory);
-    if (migrated === null) {
-      return;
-    }
-    if (existingIndex >= 0) {
-      appItems[existingIndex] = migrated;
-    } else {
-      appItems.push(migrated);
     }
   }
 
@@ -1052,12 +1023,16 @@ export class EhDownloadFileStore {
     if (restoredGallery === null) {
       return null;
     }
+    // 单趟统计：一次 listFileSync 同时得出图片数与总体积。
+    // 旧实现是「逐文件 stat 算体积」+「再 list 一次数图片」，同一目录跑两遍，
+    // 大目录下等于把主线程堵死（见 .local/BUG_ANALYSIS.md B-01）。
+    const stats = directoryStatsSinglePass(directory);
     return {
       gallery: restoredGallery.gallery,
       directory: directory,
       sourceDirectory: sourceDirectory.length > 0 ? sourceDirectory : undefined,
-      fileSize: this.directorySizeByPath(directory),
-      finished: countImageFiles(directory),
+      fileSize: stats.bytes,
+      finished: stats.images,
       total: Math.max(0, restoredGallery.total),
       migrated: migrated
     };
@@ -1462,6 +1437,36 @@ function titleFromDirectoryName(name: string, gid: number): string {
 function parseInteger(value: string, fallback: number): number {
   const parsed = Number.parseInt(value);
   return Number.isNaN(parsed) ? fallback : parsed;
+}
+
+interface DirectoryStats {
+  bytes: number;
+  images: number;
+}
+
+// 一次遍历同时得到图片数与总体积：listFileSync 一遍 + 每个条目一次 statSync。
+// 不再「先逐文件 stat、再 list 一遍数图片」——同一目录跑两遍是 B-01 卡死的主因之一。
+function directoryStatsSinglePass(directory: string): DirectoryStats {
+  const result: DirectoryStats = { bytes: 0, images: 0 };
+  try {
+    const names = fs.listFileSync(directory);
+    for (let i = 0; i < names.length; i++) {
+      const path = directory + '/' + names[i];
+      try {
+        const stat = fs.statSync(path);
+        if (stat.isDirectory()) {
+          continue;
+        }
+        result.bytes += stat.size;
+        if (isSupportedImageFile(names[i])) {
+          result.images++;
+        }
+      } catch (error) {
+      }
+    }
+  } catch (error) {
+  }
+  return result;
 }
 
 function countImageFiles(directory: string): number {

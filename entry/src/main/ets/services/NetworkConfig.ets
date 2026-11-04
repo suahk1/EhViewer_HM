@@ -95,6 +95,10 @@ let cachedNetworkEnvironmentKey: string = '';
 let lastNetworkEnvironmentCheckAt: number = 0;
 let networkRuntimeContext: common.UIAbilityContext | undefined = undefined;
 let networkRuntimeConnection: connection.NetConnection | undefined = undefined;
+// 系统层 VPN（Clash 一类）启用时不能做域名前置：代理按 SNI 分流，
+// 把 URL 换成 IP 会让 TLS 与证书对不上，表现为 TLS connection failed。
+let vpnTunnelActive: boolean = false;
+let vpnProbeAt: number = 0;
 let networkRuntimeRegistered: boolean = false;
 let networkChangeTimer: number = -1;
 let networkRecoveryTimer: number = -1;
@@ -227,10 +231,50 @@ export function releaseEhProbeAdmission(): void {
   activeFrontingProbeRequests = Math.max(0, activeFrontingProbeRequests - 1);
 }
 
+
+// 5 秒缓存一次，避免每个请求都查一次连接能力。
+export async function refreshVpnTunnelState(): Promise<boolean> {
+  const now = Date.now();
+  if (now - vpnProbeAt < 5000) {
+    return vpnTunnelActive;
+  }
+  vpnProbeAt = now;
+  try {
+    // 默认网络不一定带 VPN 标记（实测只有 WIFI），VPN 会作为独立网络出现，
+    // 所以要遍历全部网络句柄，任何一个带 BEARER_VPN 就算代理隧道生效。
+    let detected = false;
+    const nets = await connection.getAllNets();
+    for (let i = 0; i < nets.length; i++) {
+      try {
+        const caps = await connection.getNetCapabilities(nets[i]);
+        if (caps !== undefined && caps.bearerTypes !== undefined &&
+          caps.bearerTypes.indexOf(connection.NetBearType.BEARER_VPN) >= 0) {
+          detected = true;
+          break;
+        }
+      } catch (_e) {
+        // 单个句柄取不到能力时忽略
+      }
+    }
+    vpnTunnelActive = detected;
+    appLog.info(undefined, 'NetworkConfig', 'vpn probe nets=' + nets.length + ' vpn=' + vpnTunnelActive);
+  } catch (error) {
+    vpnTunnelActive = false;
+  }
+  return vpnTunnelActive;
+}
+
+export function isVpnTunnelActive(): boolean {
+  return vpnTunnelActive;
+}
+
 export function createEhRequestPlan(url: string): EhRequestPlan {
+  // 异步刷新 VPN 状态，命中缓存时不产生额外开销。
+  refreshVpnTunnelState().catch(() => {});
   const host = requestHost(url);
   const hostHeader = requestHostHeader(url);
-  if (!isEhNetworkProcessingEnabled()) {
+  if (!isEhNetworkProcessingEnabled() || vpnTunnelActive) {
+    // 走系统 VPN 时直接按域名请求，交给代理解析与分流。
     return {
       url: url,
       host: hostHeader,
@@ -295,7 +339,8 @@ export function applyEhNetworkOptions(options: http.HttpRequestOptions, plan: Eh
   useDnsOverHttps: boolean = true): void {
   options.usingCache = false;
   // 不指定 usingProtocol，由系统按目标站点能力自动协商协议并在需要时回退。
-  applyConfiguredNetworkOptions(options, useDnsOverHttps);
+  // 走系统 VPN 时连 DoH 一起关掉：应用内解析会绕过代理的 DNS，解析结果与代理不匹配。
+  applyConfiguredNetworkOptions(options, useDnsOverHttps && !vpnTunnelActive);
   if (plan.fronted) {
     options.remoteValidation = 'skip';
     if (deviceInfo.apiAvailable('26.0.0')) {
@@ -553,6 +598,15 @@ function cancelFrontingBenchmark(): void {
 }
 
 export async function ensureEhHostRules(): Promise<void> {
+  // 系统 VPN 生效时不要写 hosts：内置 IP 表会把域名钉到 Cloudflare 地址，
+  // 代理按域名分流会立刻失败（实测 27ms TLS 报错）。交给代理解析即可。
+  if (vpnTunnelActive) {
+    if (appliedHostRulesKey !== 'Vpn') {
+      await waitHostRuleTask(removeKnownHostRules(), 1200);
+      appliedHostRulesKey = 'Vpn';
+    }
+    return;
+  }
   if (directProbePending !== null && isEhDirectConnectionProbeEnabled()) {
     await directProbePending;
   }

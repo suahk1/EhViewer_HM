@@ -261,11 +261,22 @@ async function importOneArchive(context: common.UIAbilityContext, zipPath: strin
   removeDirectoryTree(workRoot);
   ensureDirectory(extractedRoot);
   try {
-    fs.copyFileSync(zipPath, sandboxZip);
-    const originalSize = await zlib.getOriginalSize(sandboxZip);
+    // 先量体积再决定是否复制：旧顺序是先把整个 ZIP 拷进缓存再判断大小，
+    // 几百 MB 的包在主线程同步复制就是几秒白卡（B-01 的 ZIP 分支）。
+    let compressedSize = 0;
+    try {
+      compressedSize = fs.statSync(zipPath).size;
+    } catch (error) {
+      return [];
+    }
+    if (compressedSize <= 0) {
+      return [];
+    }
+    const originalSize = await zlib.getOriginalSize(zipPath);
     if (originalSize <= 0 || originalSize > MAX_ZIP_UNCOMPRESSED_BYTES) {
       return [];
     }
+    fs.copyFileSync(zipPath, sandboxZip);
     const options: zlib.Options = {
       pathSeparatorStrategy: zlib.PathSeparatorStrategy.PATH_SEPARATOR_STRATEGY_REPLACE_BACKSLASH
     };
