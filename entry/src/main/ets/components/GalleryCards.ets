@@ -471,6 +471,14 @@ export struct GalleryListRow {
         if (this.localOnly) {
           LocalOnlyBadge()
             .margin({ left: 4, bottom: 4 })
+        } else if (this.cloudGone) {
+          // eslint-disable-next-line @performance/hp-arkui-replace-nested-reusable-component-by-builder
+          CloudStateBadge({ gone: true })
+            .margin({ left: 4, bottom: 4 })
+        } else if (this.cloudOnly) {
+          // eslint-disable-next-line @performance/hp-arkui-replace-nested-reusable-component-by-builder
+          CloudStateBadge({ gone: false })
+            .margin({ left: 4, bottom: 4 })
         } else {
           // eslint-disable-next-line @performance/hp-arkui-replace-nested-reusable-component-by-builder
           GalleryStatusBadges({ gallery: this.gallery })
