@@ -680,6 +680,9 @@ struct Index {
         .width('100%')
         .justifyContent(FlexAlign.End)
         .padding({ right: this.dockMenuRightInset() })
+        // 外层是整屏宽的容器，不设 Transparent 时它会把菜单左右的空白区一起吃掉，
+        // 表现为点上下能收起、点左右没反应。
+        .hitTestBehavior(HitTestMode.Transparent)
         .onAreaChange((_oldArea: Area, newArea: Area) => {
           this.viewportWidth = Number.parseFloat(newArea.width.toString());
         })

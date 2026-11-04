@@ -185,6 +185,8 @@ let recentFavoriteCat: number = FavListUrlBuilder.FAV_CAT_ALL;
 // 首屏失败重试的间隔（毫秒）。这个 ROM 上单次 TLS 握手失败要 5~8 秒才返回，
 // 间隔太密等于在同一个坏状态上重跑。
 const FIRST_PAGE_RETRY_DELAYS_MS: number[] = [1000, 2500, 5000, 8000];
+// 首屏总时限：退避重试叠加后可能超过一分钟，必须给用户一个确定的结束点。
+const FIRST_PAGE_DEADLINE_MS: number = 25000;
 
 @Component
 export struct GalleryListScene {
@@ -269,6 +271,7 @@ export struct GalleryListScene {
   // 手动点刷新就好——说明是瞬时的，重试能兜住；但绝不能无限重试。
   // 间隔逐次拉长：这个 ROM 上单次 TLS 握手失败要 5~8 秒才返回，间隔太密等于白跑。
   private firstPageRetryCount: number = 0;
+  private firstPageDeadlineHit: boolean = false;
   // 搜索历史只在首屏加载成功后才落库：网络挂了、站点拦截、解析失败都不该留下一条记录，
   // 否则历史里全是打不开的词。提交时先暂存，成功回调里消费一次。
   private pendingSearchHistoryKeyword: string = '';
@@ -838,6 +841,10 @@ export struct GalleryListScene {
   }
 
   private loadListPage(pageIndex: number, preserveExisting: boolean = false, onDone?: () => void): void {
+    if (pageIndex === 0 && !preserveExisting) {
+      // 用户点刷新时重新计时，否则上一次的超时标志会挡住后续重试。
+      this.firstPageDeadlineHit = false;
+    }
     if (this.useLocalProvider) {
       this.loadLocal(pageIndex, preserveExisting, onDone);
       return;
@@ -865,10 +872,23 @@ export struct GalleryListScene {
       this.imageSearchPath.length === 0 ? this.loadCoverSearchPage(pageIndex, generation, this.coverSearchSource) :
       this.loadRoutePageWithFallback(pageIndex);
 
-    request.then((result: GalleryListLoadResult) => {
+    // 首屏给一个总时限，到点直接进入失败态，避免界面永远停在「正在加载」。
+    const guarded: Promise<GalleryListLoadResult> = (pageIndex === 0 && !preserveExisting)
+      ? Promise.race([request, this.firstPageDeadline()])
+      : request;
+    guarded.then((result: GalleryListLoadResult) => {
       this.applyListReplacementResult(generation, result, pageIndex, true, onDone);
     }).catch((error: Error) => {
       this.applyListReplacementFailure(generation, error, onDone);
+    });
+  }
+
+  private firstPageDeadline(): Promise<GalleryListLoadResult> {
+    return new Promise<GalleryListLoadResult>((_resolve, reject) => {
+      setTimeout(() => {
+        this.firstPageDeadlineHit = true;
+        reject(new Error('Request timed out'));
+      }, FIRST_PAGE_DEADLINE_MS);
     });
   }
 
@@ -910,6 +930,9 @@ export struct GalleryListScene {
 
   // 首屏拉取失败时排一次重试。返回 true 表示已排上，调用方不要再渲染错误。
   private scheduleFirstPageRetry(onDone?: () => void): boolean {
+    if (this.firstPageDeadlineHit) {
+      return false;
+    }
     const delays: number[] = FIRST_PAGE_RETRY_DELAYS_MS;
     if (this.firstPageRetryCount >= delays.length) {
       return false;
