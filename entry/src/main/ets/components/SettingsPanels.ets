@@ -12,6 +12,7 @@ import {
 import {
   STATUS_BAR_HEIGHT_KEY,
   BOTTOM_AVOID_HEIGHT_KEY,
+  LANGUAGE_REVISION_KEY,
 } from '../shared/AppRuntime';
 import { appDockBottomInset } from './FloatingDock';
 import {
@@ -71,6 +72,8 @@ import {
 
 @Component
 export struct SettingsHomePanel {
+  // 语言切换后需要整表重建：SETTINGS_HEADERS 的中文在 build 时才翻译。
+  @StorageProp(LANGUAGE_REVISION_KEY) languageRevision: number = 0;
   onMenu: () => void = () => {};
   onOpen: (panel: SettingsPanel) => void = () => {};
   initialScrollOffset: number = 0;
@@ -268,6 +271,7 @@ export struct SettingsTextBlock {
 
 @Component
 export struct SettingsDetailPanel {
+  @StorageProp(LANGUAGE_REVISION_KEY) detailLanguageRevision: number = 0;
   @Prop @Watch('onPanelChanged') panel: SettingsPanel = SettingsPanel.Eh;
   @Prop signedIn: boolean = false;
   @Prop @Watch('rebuildSettingsRows') themeName: string = 'Light';

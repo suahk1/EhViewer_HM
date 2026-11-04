@@ -685,6 +685,8 @@ export struct SettingsScene {
       notifyLanguageChanged();
     }
     if (key === 'app_language') {
+      // 设置树是常驻实例，语言只在重建时翻译；明确提示需要重启，避免半中半英。
+      this.settingsRenderRevision++;
       this.showFloatingStatus(uiText('Restart the app to apply the new language'));
     }
     if (key === 'show_jpn_title') {

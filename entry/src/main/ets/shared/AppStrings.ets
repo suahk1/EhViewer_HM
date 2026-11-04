@@ -87,6 +87,10 @@ export function uiText(text: string): string {
   if (text === 'zh-TW') {
     return '繁體中文';
   }
+  // 语言选项用自称：英文界面语言在中文界面下仍显示 English，不译成「英语」。
+  if (text === 'English') {
+    return 'English';
+  }
   const language = currentUiLanguage();
   if (language === 'English') {
     return text;
@@ -1988,6 +1992,7 @@ export function zhText(text: string): string {
     case 'Downloading package': return '正在下载安装包';
     case 'Package saved': return '安装包已保存';
     case 'install via HDC or debug assistant': return '用 HDC 或调试助手安装';
+    case 'Interface language applied': return '界面语言已切换';
     case 'Theme and gallery list display': return '主题与画廊列表显示';
     case 'Lock, backup, cache and cleanup': return '锁定、备份、缓存与清理';
     case 'Proxy, DNS, hosts and diagnostics': return '代理、DNS、hosts 与诊断';
