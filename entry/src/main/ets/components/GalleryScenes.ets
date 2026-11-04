@@ -56,7 +56,9 @@ import {
   pushActiveBackHandler,
   readerStartIndex,
   readerStartIndexAsync,
-  runDetailBackHandler
+  runDetailBackHandler,
+  rememberSearchQuery,
+  getLastSearchQuery,
 } from '../shared/AppRuntime';
 import {
   themeAccentTextColor,
@@ -841,6 +843,9 @@ export struct GalleryListScene {
   }
 
   private loadListPage(pageIndex: number, preserveExisting: boolean = false, onDone?: () => void): void {
+    if (this.isSearchResultScene && this.keyword.trim().length > 0) {
+      rememberSearchQuery(this.keyword, this.searchMode, this.searchCategory);
+    }
     if (pageIndex === 0 && !preserveExisting) {
       // 用户点刷新时重新计时，否则上一次的超时标志会挡住后续重试。
       this.firstPageDeadlineHit = false;
@@ -1880,6 +1885,12 @@ export struct GalleryListScene {
     const frame = this.nestedSearchFrames.pop();
     if (frame !== undefined) {
       this.searchResultDraft = cloneSearchResultDraft(frame.draft);
+      if (frame.draft.keyword.trim().length > 0) {
+        this.keyword = frame.draft.keyword;
+        this.searchMode = frame.draft.mode;
+        this.searchCategory = frame.draft.category;
+        this.searchSubmitted = true;
+      }
       this.showDetail = frame.showDetail;
       this.detailLink = cloneGalleryDetailLink(frame.detailLink);
       this.detail = cloneGalleryDetail(frame.detail);
@@ -1888,7 +1899,17 @@ export struct GalleryListScene {
       this.detailScrollOffset = frame.detailScrollOffset;
       this.searchResultDetailOpened = frame.showDetail;
       this.activeSplitPane = frame.showDetail ? SPLIT_PANE_FOCUS_RIGHT : SPLIT_PANE_FOCUS_LEFT;
+      this.showSearchResultScene = true;
+      this.presentSearchResultScene();
+      this.saveNavigationCache();
+      return;
+    }
+    if (!this.isSearchResultScene && this.keyword.trim().length > 0) {
+      // 本场景自己就是上一层搜索结果列表：关掉压上来的子搜索即可，不能把整页退回输入框。
+      this.showSearchResultScene = false;
+      this.searchResultDraft = createEmptySearchResultDraft();
       this.searchResultSceneRevision++;
+      this.restoreBackHandler();
       this.saveNavigationCache();
       return;
     }
@@ -2317,8 +2338,18 @@ export struct GalleryListScene {
     this.showReader = false;
     this.activeSplitPane = SPLIT_PANE_FOCUS_LEFT;
     if (this.showSearchResultScene && this.searchResultDetailOpened) {
+      const frameDraft = cloneSearchResultDraft(this.searchResultDraft);
+      if (frameDraft.keyword.trim().length === 0) {
+        // 搜索结果不在路由里，组件内的 draft/keyword 可能为空；用全局记录的上一次查询兜底。
+        const remembered = getLastSearchQuery();
+        const local = this.keyword.trim().length > 0;
+        frameDraft.keyword = local ? this.keyword : remembered.keyword;
+        frameDraft.mode = local ? this.searchMode : remembered.mode;
+        frameDraft.category = local ? this.searchCategory : remembered.category;
+        frameDraft.submitted = frameDraft.keyword.trim().length > 0;
+      }
       this.nestedSearchFrames.push({
-        draft: cloneSearchResultDraft(this.searchResultDraft),
+        draft: frameDraft,
         showDetail: this.showDetail,
         detailLink: cloneGalleryDetailLink(this.detailLink),
         detail: cloneGalleryDetail(this.detail),

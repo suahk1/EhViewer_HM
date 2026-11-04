@@ -205,6 +205,26 @@ export const SETTINGS_HEADERS: SettingsHeaderItem[] = [
   { panel: SettingsPanel.About, title: 'About', icon: 'I', summary: 'Version and license' }
 ];
 
+// 最近一次真正执行过的搜索查询：搜索结果不是路由，组件局部状态会在重建时丢失，
+// 这里存一份全局的，供返回时还原（B-03）。
+export interface LastSearchQuery {
+  keyword: string;
+  mode: ListMode;
+  category: number;
+}
+let lastSearchQuery: LastSearchQuery = { keyword: '', mode: ListMode.Normal, category: 0 };
+
+export function rememberSearchQuery(keyword: string, mode: ListMode, category: number): void {
+  if (keyword.trim().length === 0) {
+    return;
+  }
+  lastSearchQuery = { keyword: keyword, mode: mode, category: category };
+}
+
+export function getLastSearchQuery(): LastSearchQuery {
+  return lastSearchQuery;
+}
+
 let activeBackHandler: (() => boolean) | null = null;
 let readerActiveBackHandler: (() => boolean) | null = null;
 const ACTIVE_BACK_HANDLERS: Array<() => boolean> = [];
