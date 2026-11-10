@@ -7,6 +7,7 @@ import {
   GalleryDetail,
   GalleryInfo,
   GalleryRoute,
+  GallerySite,
 } from '../model/GalleryModels';
 import {
   DOWNLOAD_LOCATION_APP_FILES,
@@ -42,7 +43,7 @@ import {
 } from '../services/CellularNetworkGuard';
 import { DEFAULT_ADVANCE_SEARCH, EhUrl, ListMode } from '../services/EhUrl';
 import { galleryMatchesLocalSearch, LocalGallerySearchOptions } from '../services/LocalGallerySearch';
-import { DetailSearchRequest } from '../services/GalleryDetailSupport';
+import { createGalleryDetailLinkFromUrl, DetailSearchRequest } from '../services/GalleryDetailSupport';
 import { CoverSearchSource } from '../model/GalleryModels';
 import {
   createEmptyGalleryDetailLink,
@@ -68,7 +69,14 @@ import { readerSessionStore } from '../services/ReaderSessionStore';
 import { DOWNLOAD_SORT_OPTIONS, DOWNLOAD_SORT_SETTING_KEY, normalizeDownloadSortMode } from '../services/DownloadSortSupport';
 import { applyDownloadProgressUpdates, collectFailedDownloads, DownloadListProjection, hasAnyFailedDownload } from '../services/DownloadListProjection';
 import { SettingsOptionPanel } from './SettingsPanels';
-import { BOTTOM_AVOID_HEIGHT_KEY, LANGUAGE_REVISION_KEY, STATUS_BAR_HEIGHT_KEY, runDetailBackHandler, setActiveBackHandler } from '../shared/AppRuntime';
+import {  PENDING_DETAIL_RESTORE_REVISION_KEY,
+  PENDING_DETAIL_RESTORE_ROUTE_KEY,
+  PENDING_DETAIL_RESTORE_SITE_KEY,
+  PENDING_DETAIL_RESTORE_URL_KEY,
+  REMEMBERED_DETAIL_ROUTE_KEY,
+  REMEMBERED_DETAIL_SITE_KEY,
+  REMEMBERED_DETAIL_URL_KEY,
+ BOTTOM_AVOID_HEIGHT_KEY, LANGUAGE_REVISION_KEY, STATUS_BAR_HEIGHT_KEY, runDetailBackHandler, setActiveBackHandler } from '../shared/AppRuntime';
 import { sortedStringKey, toggleStringValue } from '../shared/AppRuntime';
 import { APP_DOCK_BAR_HEIGHT, APP_DOCK_FAB_RESERVE, appDockBottomInset } from './FloatingDock';
 import { appLog } from '../services/AppLogService';
@@ -82,6 +90,7 @@ import {
   galleryListViewportHeight,
 } from '../shared/AdaptiveGalleryListLayout';
 import {
+  clearActiveBackHandler,
   cloneGalleryDetail,
   cloneGalleryInfo,
   createEmptyDetail,
@@ -315,6 +324,8 @@ export struct DownloadScene {
   @State categoryFilter: string = 'All';
   @State statusText: string = 'Downloads: idle';
   @State showDetail: boolean = false;
+  // 稳定的返回处理器闭包：所有注册点共用同一引用，卸载时才能做守卫式清槽。
+  private boundSystemBack: () => boolean = () => this.handleSystemBack();
   @State detailLink: GalleryDetailLink = createEmptyGalleryDetailLink();
   @State detail: GalleryDetail = createEmptyDetail();
   @State detailRequestUrl: string = '';
@@ -434,10 +445,11 @@ export struct DownloadScene {
     this.restoreEmbeddedContinuationIfPresent();
     this.floatingActionSideController.syncFromSettings();
     this.restoreNavigationCache();
+    this.consumePendingDetailRestore();
     this.syncSceneContentWidthFromWindow();
     this.syncDownloadContentWidthFromWindow();
     markCurrentRouteRightPane(this.useSplitLayout());
-    setActiveBackHandler(() => this.handleSystemBack());
+    setActiveBackHandler(this.boundSystemBack);
     this.unsubscribeStore = ehDownloadStore.subscribe((items: DownloadInfo[], labels: DownloadLabel[]) => {
       this.items = items;
       this.labels = labels;
@@ -480,6 +492,17 @@ export struct DownloadScene {
   }
 
   aboutToDisappear(): void {
+    // 单槽守卫清空：否则残留闭包里 showDetail 冻结为 true，会吞掉全局返回点恢复
+    // 之前的所有返回键（F-105 问题3 场景4 的根因）。
+    clearActiveBackHandler(this.boundSystemBack);
+    // dock 切走时正开着云端详情：记入全局返回点（F-105 问题3 简单全局版）。
+    // 必须挂卸载钩子：Index 用 if/else 条件渲染场景，切走即卸载，@Prop/@StorageProp
+    // 的变化回调和卸载竞态不可靠，aboutToDisappear 是唯一保证执行的时机。
+    if (this.showDetail && this.detailLink.url.length > 0) {
+      AppStorage.setOrCreate(REMEMBERED_DETAIL_URL_KEY, this.detailLink.url);
+      AppStorage.setOrCreate(REMEMBERED_DETAIL_SITE_KEY, this.detailLink.site === GallerySite.Ex ? 1 : 0);
+      AppStorage.setOrCreate(REMEMBERED_DETAIL_ROUTE_KEY, GalleryRoute.Downloads.toString());
+    }
     this.stopDownloadListWork();
     this.rememberDownloadScrollOffset();
     ehBrowsePositionStore.flush();
@@ -492,6 +515,46 @@ export struct DownloadScene {
 
   onResetVersionChanged(): void {
     this.resetToTopLevel();
+  }
+
+  @StorageProp(PENDING_DETAIL_RESTORE_REVISION_KEY) @Watch('onPendingDetailRestoreChange') pendingDetailRestoreRevision: number = 0;
+
+  onPendingDetailRestoreChange(): void {
+    this.consumePendingDetailRestore();
+  }
+
+  // 全局返回点恢复：pending 目标是下载页才消费；本地面板（无云端链接）不在记忆范围。
+  private consumePendingDetailRestore(): void {
+    const pendingRoute = AppStorage.get<string>(PENDING_DETAIL_RESTORE_ROUTE_KEY) ?? '';
+    if (pendingRoute !== GalleryRoute.Downloads.toString()) {
+      return;
+    }
+    const pendingUrl = AppStorage.get<string>(PENDING_DETAIL_RESTORE_URL_KEY) ?? '';
+    AppStorage.setOrCreate(PENDING_DETAIL_RESTORE_URL_KEY, '');
+    AppStorage.setOrCreate(PENDING_DETAIL_RESTORE_ROUTE_KEY, '');
+    if (pendingUrl.length === 0) {
+      return;
+    }
+    const siteIndex = AppStorage.get<number>(PENDING_DETAIL_RESTORE_SITE_KEY) ?? 0;
+    this.openDetailFromUrl(pendingUrl, siteIndex);
+  }
+
+  // 按 URL 重建云端详情层，状态设置与 openDetailNow 的云端分支一致。
+  private openDetailFromUrl(url: string, siteIndex: number): void {
+    const link = createGalleryDetailLinkFromUrl(url, siteIndex === 1 ? GallerySite.Ex : GallerySite.E);
+    if (link === null) {
+      return;
+    }
+    this.restoreDetailWithFade = false;
+    this.activeSplitPane = SPLIT_PANE_FOCUS_RIGHT;
+    this.localDetailGid = -1;
+    this.showDetail = true;
+    this.syncDownloadContentWidthForCurrentLayout();
+    markCurrentRouteRightPane(this.useSplitLayout());
+    this.detailLink = link;
+    this.detail = initialDetailForLink(link);
+    this.detailRequestUrl = link.url;
+    this.saveNavigationCache();
   }
 
   private handleSystemBack(): boolean {
@@ -2065,6 +2128,21 @@ export struct DownloadScene {
     return hasAnyFailedDownload(this.items);
   }
 
+  // 批量重试失败任务：失败项逐个走 resumeGallery（改回等待并踢队列），
+  // 队列自身的防重入保证多次调用安全。
+  private retryFailedDownloads(): void {
+    const failed: DownloadInfo[] = collectFailedDownloads(this.items);
+    if (failed.length === 0) {
+      this.showFloatingStatus('No failed downloads to retry');
+      return;
+    }
+    this.closeDownloadStatusPanel();
+    for (let i = 0; i < failed.length; i++) {
+      ehDownloadManager.resumeGallery(failed[i].gid);
+    }
+    this.showFloatingStatus('Retrying ' + failed.length.toString() + ' failed downloads');
+  }
+
   private clearFailedDownloads(): void {
     const failed: DownloadInfo[] = collectFailedDownloads(this.items);
     if (failed.length === 0) {
@@ -2406,7 +2484,7 @@ export struct DownloadScene {
     this.tagSearchImageShowExpunged = false;
     this.saveNavigationCache();
     setTimeout(() => {
-      setActiveBackHandler(() => this.handleSystemBack());
+      setActiveBackHandler(this.boundSystemBack);
     }, 0);
   }
 
@@ -2457,7 +2535,7 @@ export struct DownloadScene {
 
   private restoreBackHandler(): void {
     setTimeout(() => {
-      setActiveBackHandler(() => this.handleSystemBack());
+      setActiveBackHandler(this.boundSystemBack);
     }, 0);
   }
 
@@ -3233,6 +3311,9 @@ export struct DownloadScene {
           },
           onClearFailed: () => {
             this.clearFailedDownloads();
+          },
+          onRetryFailed: () => {
+            this.retryFailedDownloads();
           }
         })
           .zIndex(24)

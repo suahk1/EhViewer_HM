@@ -14,7 +14,7 @@ import {
 } from '../services/WebRuntimeSupport';
 import { EhUrl } from '../services/EhUrl';
 import { applyAppChromeImmersiveMode } from '../services/WindowChromeController';
-import { LANGUAGE_REVISION_KEY, setActiveBackHandler } from '../shared/AppRuntime';
+import { LANGUAGE_REVISION_KEY, setActiveBackHandler, clearActiveBackHandler } from '../shared/AppRuntime';
 import { themeAccentTextColor, isDarkTheme, themeFieldBackground, themeOnPrimaryText, themePageBackground, themePlaceholderColor, themePrimaryColor, themePrimaryText, themeSecondaryText, themeSuccessText, themeSurface, themeSurfaceVariant, themeTransparentColor } from '../shared/AppPalette';
 import { THEME_REVISION_KEY } from '../shared/AppStrings';
 import {
@@ -73,7 +73,7 @@ export struct SessionScene {
 
   aboutToAppear(): void {
     applyAppChromeImmersiveMode();
-    setActiveBackHandler(() => this.handleSystemBack());
+    setActiveBackHandler(this.boundSystemBack);
     this.applyKeyboardAvoidance();
     this.mode = this.initialMode;
     this.cookieInput = ehCookieStore.getEditableCookieHeader();
@@ -101,7 +101,11 @@ export struct SessionScene {
     }
   }
 
+  // 稳定闭包 + 卸载守卫清槽：防止残留单槽处理器吞返回键（F-105 问题3）。
+  private boundSystemBack: () => boolean = () => this.handleSystemBack();
+
   aboutToDisappear(): void {
+    clearActiveBackHandler(this.boundSystemBack);
     this.clearPasswordWebTimers();
     this.restoreKeyboardAvoidance();
   }

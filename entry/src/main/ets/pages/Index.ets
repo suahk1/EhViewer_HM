@@ -61,6 +61,13 @@ import {
   syncCookieHeaderToWebViewAsync as syncCookieHeaderToWebView
 } from '../components/SessionScene';
 import {
+  PENDING_DETAIL_RESTORE_REVISION_KEY,
+  PENDING_DETAIL_RESTORE_ROUTE_KEY,
+  PENDING_DETAIL_RESTORE_SITE_KEY,
+  PENDING_DETAIL_RESTORE_URL_KEY,
+  REMEMBERED_DETAIL_ROUTE_KEY,
+  REMEMBERED_DETAIL_SITE_KEY,
+  REMEMBERED_DETAIL_URL_KEY,
   BOTTOM_AVOID_HEIGHT_KEY,
   LANGUAGE_REVISION_KEY,
   IDENTITY_AUTH_LOCKED_KEY,
@@ -87,6 +94,18 @@ interface RootNavigationCache {
   initialized: boolean;
   activeRoute: GalleryRoute;
   routeResetVersion: number;
+}
+
+// 记忆里的路由名转枚举；未知名字回退主页（F-105 问题3）。
+function galleryRouteFromName(name: string): GalleryRoute {
+  if (name === GalleryRoute.Subscription.toString()) { return GalleryRoute.Subscription; }
+  if (name === GalleryRoute.WhatsHot.toString()) { return GalleryRoute.WhatsHot; }
+  if (name === GalleryRoute.TopLists.toString()) { return GalleryRoute.TopLists; }
+  if (name === GalleryRoute.Favorites.toString()) { return GalleryRoute.Favorites; }
+  if (name === GalleryRoute.History.toString()) { return GalleryRoute.History; }
+  if (name === GalleryRoute.Downloads.toString()) { return GalleryRoute.Downloads; }
+  if (name === GalleryRoute.Settings.toString()) { return GalleryRoute.Settings; }
+  return GalleryRoute.Home;
 }
 
 let rootNavigationCache: RootNavigationCache = {
@@ -206,13 +225,29 @@ struct Index {
     // activeRoute 本来就不变，一累计就会 setRootRoute，表现为「设置→界面，侧滑一次直接跳主页」。
     // 现在的规则：handler 消费 → 到此为止；没人消费 → 回根路由（不交回系统，避免退桌面）。
     if (runActiveBackHandler()) {
-      // handler 消费了这次返回就到此为止，不再叠加任何「兜底跳根路由」。
+        // handler 消费了这次返回就到此为止，不再叠加任何「兜底跳根路由」。
       // 之前那里按「路由是否变化」计数，而设置子面板、详情页弹层关掉时 activeRoute 本来就不变，
       // 一旦计数攒到 2 就会直接 setRootRoute —— 表现为「设置→界面，侧滑一次直接跳回主页」。
       this.backMissCount = 0;
       return true;
     }
     this.backMissCount = 0;
+    // 全局返回点：dock 切走时被中断的详情（简单全局版，只记最后一站，F-105 问题3）。
+    const rememberedUrl = AppStorage.get<string>(REMEMBERED_DETAIL_URL_KEY) ?? '';
+    if (rememberedUrl.length > 0) {
+      const rememberedRouteName = AppStorage.get<string>(REMEMBERED_DETAIL_ROUTE_KEY) ?? '';
+      const targetRoute = galleryRouteFromName(rememberedRouteName);
+      if (this.activeRoute !== targetRoute) {
+        this.setRootRoute(targetRoute);
+      }
+      AppStorage.setOrCreate(PENDING_DETAIL_RESTORE_URL_KEY, rememberedUrl);
+      AppStorage.setOrCreate(PENDING_DETAIL_RESTORE_SITE_KEY, AppStorage.get<number>(REMEMBERED_DETAIL_SITE_KEY) ?? 0);
+      AppStorage.setOrCreate(PENDING_DETAIL_RESTORE_ROUTE_KEY, rememberedRouteName);
+      const restoreRevision = AppStorage.get<number>(PENDING_DETAIL_RESTORE_REVISION_KEY) ?? 0;
+      AppStorage.setOrCreate(PENDING_DETAIL_RESTORE_REVISION_KEY, restoreRevision + 1);
+      AppStorage.setOrCreate(REMEMBERED_DETAIL_URL_KEY, '');
+      return true;
+    }
     const launchRoute = this.routeAfterSignIn();
     if (this.activeRoute !== launchRoute) {
       this.setRootRoute(launchRoute);

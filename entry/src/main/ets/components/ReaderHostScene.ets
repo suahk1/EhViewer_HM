@@ -190,6 +190,14 @@ export struct ReaderSessionScene {
       this.detailRequestUrl, this.listRequestUrl, this.site, this.pageIndex, this.readerPages));
   }
 
+  private readerDownloadGalleryDir(): string {
+    const context = getAbilityContext();
+    if (context === undefined || this.detail.gid <= 0 || this.detail.token.length === 0) {
+      return '';
+    }
+    return ehDownloadFileStore.galleryDirectory(context, this.detail);
+  }
+
   private closeReader(): void {
     if (this.restoreAppChromeOnExit) {
       this.onBack();
@@ -1195,6 +1203,8 @@ export struct ReaderSessionScene {
       readerPages: this.readerPages,
       readerPreviews: this.detail.previewSet,
       galleryId: this.detail.gid,
+      downloadGalleryDir: this.readerDownloadGalleryDir(),
+      downloadGalleryIsLocalBook: this.detail.token.length === 0,
       statusText: this.statusText,
       pageIndex: this.pageIndex,
       totalPages: this.readerTotalPages(),

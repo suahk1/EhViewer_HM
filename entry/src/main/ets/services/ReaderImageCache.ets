@@ -6,6 +6,7 @@ import { appLog } from './AppLogService';
 import {
   acquireEhRequestAdmission,
   applyEhNetworkOptions,
+  builtInHostPlanForUrl,
   createEhRequestPlan,
   currentDnsOverHttpsUrl,
   EhRequestAdmission,
@@ -18,6 +19,7 @@ import {
 import { appSettingsStore } from './AppSettingsStore';
 import { hathQualityStore } from './HathQualityStore';
 import { cancelHttpRequest, retireHttpRequest, acquireHttpRequest, markHttpRequestVolatile } from './HttpRequestLifecycle';
+import { fetchImageFileOverDirectTls } from './DirectTlsImageFetcher';
 import { ReaderImageDemand, readerImageRequestControl, READER_VISIBLE_IMAGE_PRIORITY,
   READER_PREFETCH_IMAGE_PRIORITY } from './ReaderImageRequestControl';
 import { readerCancellableImageTransfer, supportsCancellableReaderTransfer } from './ReaderCancellableImageTransfer';
@@ -356,6 +358,24 @@ export class ReaderImageCache {
     }
   }
 
+  // DirectTls 拉到的临时文件登记进缓存目录（移动到规范缓存路径）
+  private async finalizeDirectTlsFile(context: common.UIAbilityContext, tempFile: string,
+    targetPath: string): Promise<string> {
+    try {
+      fs.mkdirSync(targetPath.substring(0, targetPath.lastIndexOf('/')), true);
+      fs.renameSync(tempFile, targetPath);
+      return targetPath;
+    } catch (error) {
+      try {
+        fs.renameSync(tempFile, targetPath);
+        return targetPath;
+      } catch (ignore) {
+        removeFileQuietly(tempFile);
+        return '';
+      }
+    }
+  }
+
   private async downloadWithRetry(context: common.UIAbilityContext, imageUrl: string, referer: string, path: string,
     priority: number, onProgress?: ImageDownloadProgressCallback, options?: ImageDownloadOptions,
     demand?: ReaderImageDemand): Promise<string> {
@@ -367,9 +387,12 @@ export class ReaderImageCache {
     const retryLimit = normalizedRetryLimit(options);
     for (let attempt = 0; attempt < retryLimit; attempt++) {
       throwIfReaderImageCancelled(demand);
+      // 第 2 次尝试起换「内置 hosts IP 直连」：第 1 次（DoH→系统 DNS）全灭说明
+      // DNS 层面已不可救，唯一不依赖 DNS 的路径就是内置 IP。其他功能零影响。
+      const hostsFallback = attempt >= 1 && builtInHostPlanForUrl(imageUrl) !== null;
       try {
         return await this.downloadOnce(context, imageUrl, referer, path, attempt, priority, onProgress,
-          useDnsOverHttps, demand);
+          useDnsOverHttps && !hostsFallback, demand, hostsFallback);
       } catch (error) {
         throwIfReaderImageCancelled(demand);
         removeFileQuietly(path);
@@ -388,6 +411,41 @@ export class ReaderImageCache {
         }
         appLog.warn(context, 'ReaderImageCache', 'Image attempt failed attempt=' + (attempt + 1).toString() +
           '/' + retryLimit.toString() + ', url=' + trimLogUrl(imageUrl) + ': ' + lastError);
+        // 403/TLS/解析失败等非瞬态错误也值得试一次零 DNS 的内置 IP 直连：
+        // 换边缘 IP 可能绕开证书/拦截问题，这是 DNS 层修复不了的故障唯一自救机会。
+        if (attempt === 0 && builtInHostPlanForUrl(imageUrl) !== null) {
+          try {
+            const r = await this.downloadOnce(context, imageUrl, referer, path, attempt, priority, onProgress,
+              false, demand, true);
+            console.info('[ImgPlan] hosts fallback SUCCESS url=' + trimLogUrl(imageUrl));
+            return r;
+          } catch (hostsError) {
+            console.info('[ImgPlan] hosts fallback FAILED url=' + trimLogUrl(imageUrl) +
+              ' err=' + imageNetworkErrorMessage(hostsError));
+            lastError = imageNetworkErrorMessage(hostsError);
+          }
+        }
+        // 最终兜底：http 栈全灭（SNI 阻断 + 证书校验死结）时用 TLSSocket 裸拉。
+        // 仅图片展示场景，skipRemoteValidation 的风险已注释在 DirectTlsImageFetcher。
+        if (attempt === 0) {
+          try {
+            const directPath = await fetchImageFileOverDirectTls(imageUrl, path + '.dtls',
+              referer);
+            if (directPath.length === 0) {
+              console.info('[ImgPlan] direct-tls EMPTY url=' + trimLogUrl(imageUrl));
+            }
+            if (directPath.length > 0) {
+              console.info('[ImgPlan] direct-tls SUCCESS url=' + trimLogUrl(imageUrl));
+              const renamed = await this.finalizeDirectTlsFile(context, directPath, path);
+              if (renamed.length > 0) {
+                return renamed;
+              }
+            }
+          } catch (directError) {
+            console.info('[ImgPlan] direct-tls FAILED url=' + trimLogUrl(imageUrl) +
+              ' err=' + imageNetworkErrorMessage(directError));
+          }
+        }
         if (attempt >= retryLimit - 1 || !isTransientImageError(lastError)) {
           throw new Error(lastError);
         }
@@ -399,7 +457,7 @@ export class ReaderImageCache {
 
   private async downloadOnce(context: common.UIAbilityContext, imageUrl: string, referer: string, path: string,
     attempt: number, priority: number, onProgress?: ImageDownloadProgressCallback,
-    useDnsOverHttps: boolean = true, demand?: ReaderImageDemand): Promise<string> {
+    useDnsOverHttps: boolean = true, demand?: ReaderImageDemand, hostsFallback: boolean = false): Promise<string> {
     let request: http.HttpRequest | null = null;
     let plan: EhRequestPlan | null = null;
     let admission: EhRequestAdmission | null = null;
@@ -408,7 +466,10 @@ export class ReaderImageCache {
     let startedAt = Date.now();
     let outcomeRecorded = false;
     try {
-      plan = createEhRequestPlan(imageUrl);
+      plan = hostsFallback ? builtInHostPlanForUrl(imageUrl) : createEhRequestPlan(imageUrl);
+      if (plan === null) {
+        throw new Error('Image hosts fallback unavailable');
+      }
       const header = buildImageRequestHeader(plan, referer, ehCookieStore.getCookieHeaderForUrl(imageUrl));
       const timeout = imageRequestTimeoutMs();
       await ensureEhHostRules();

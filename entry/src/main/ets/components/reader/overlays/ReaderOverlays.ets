@@ -137,6 +137,7 @@ struct ReaderProgressText {
 @Component
 struct ReaderSliderBubble {
   @Prop @Watch('onTextChange') text: string = '';
+  @Prop @Watch('onImageChange') imagePath: string = '';
   @State displayText: string = '';
 
   aboutToAppear(): void {
@@ -147,22 +148,52 @@ struct ReaderSliderBubble {
     this.displayText = this.text;
   }
 
+  onImageChange(): void {
+  }
+
+  private bubbleSide(): number {
+    // 有缩略图时气泡放大为方形预览，否则为圆形页码（52，页码 18px 更醒目）
+    return this.imagePath.length > 0 ? 72 : 52;
+  }
+
   build() {
-    Text(this.displayText)
-      .fontSize(14)
-      .fontWeight(FontWeight.Medium)
-      .fontColor(isHarmonyUiStyle() ? themePrimaryText() : Color.White)
-      .lineHeight(40)
-      .textAlign(TextAlign.Center)
-      .textVerticalAlign(TextVerticalAlign.CENTER)
-      .width(40)
-      .height(40)
-      .backgroundColor(uiReaderProgressBackgroundColor('#1F2937'))
-      .backgroundEffect(uiReaderProgressBackgroundEffect())
-      .borderRadius(uiRadius(20))
-      .borderWidth(1)
-      .borderColor(isHarmonyUiStyle() ? uiButtonHighlightBorderColor() : '#3F4756')
-      .shadow({ radius: 8, color: 'rgba(0,0,0,0.45)', offsetX: 0, offsetY: 2 })
+    if (this.imagePath.length > 0) {
+      Stack({ alignContent: Alignment.Bottom }) {
+        Image(this.imagePath)
+          .width(this.bubbleSide())
+          .height(this.bubbleSide())
+          .objectFit(ImageFit.Cover)
+          .borderRadius(uiRadius(10))
+          .borderWidth(1)
+          .borderColor(isHarmonyUiStyle() ? uiButtonHighlightBorderColor() : '#3F4756')
+          .shadow({ radius: 8, color: 'rgba(0,0,0,0.45)', offsetX: 0, offsetY: 2 })
+        Text(this.displayText)
+          .fontSize(14)
+          .fontWeight(FontWeight.Medium)
+          .fontColor(Color.White)
+          .textAlign(TextAlign.Center)
+          .width(this.bubbleSide())
+          .height(22)
+          .backgroundColor('rgba(15,23,42,0.75)')
+          .borderRadius({ bottomLeft: uiRadius(10), bottomRight: uiRadius(10) })
+      }
+    } else {
+      Text(this.displayText)
+        .fontSize(18)
+        .fontWeight(FontWeight.Medium)
+        .fontColor(isHarmonyUiStyle() ? themePrimaryText() : Color.White)
+        .lineHeight(52)
+        .textAlign(TextAlign.Center)
+        .textVerticalAlign(TextVerticalAlign.CENTER)
+        .width(52)
+        .height(52)
+        .backgroundColor(uiReaderProgressBackgroundColor('#1F2937'))
+        .backgroundEffect(uiReaderProgressBackgroundEffect())
+        .borderRadius(uiRadius(26))
+        .borderWidth(1)
+        .borderColor(isHarmonyUiStyle() ? uiButtonHighlightBorderColor() : '#3F4756')
+        .shadow({ radius: 8, color: 'rgba(0,0,0,0.45)', offsetX: 0, offsetY: 2 })
+    }
   }
 }
 
@@ -287,6 +318,7 @@ export struct ReaderSliderPanel {
   @Prop progressText: string = '';
   @Prop sliderDragging: boolean = false;
   @Prop sliderPageText: string = '';
+  @Prop sliderThumbPath: string = '';
   @Prop sliderBubbleX: number = 0;
   @Prop sliderTrackWidth: number = 1;
   @Prop sliderLiveIndex: number = 0;
@@ -300,7 +332,7 @@ export struct ReaderSliderPanel {
   onToggleAutoTransfer: () => void = () => {};
 
   private sliderBubbleLeft(): number {
-    const bubbleSize = 40;
+    const bubbleSize = this.sliderThumbPath.length > 0 ? 64 : 40;
     const maxLeft = Math.max(0, this.sliderTrackWidth - bubbleSize);
     return Math.max(0, Math.min(maxLeft, this.sliderBubbleX - bubbleSize / 2));
   }
@@ -331,7 +363,7 @@ export struct ReaderSliderPanel {
           Blank()
             .width(54)
           Stack() {
-            ReaderSliderBubble({ text: this.sliderPageText })
+            ReaderSliderBubble({ text: this.sliderPageText, imagePath: this.sliderThumbPath })
               .position({ x: this.sliderBubbleLeft(), y: 0 })
           }
           .layoutWeight(1)

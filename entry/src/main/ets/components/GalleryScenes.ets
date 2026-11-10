@@ -21,7 +21,7 @@ import {
 import { ehTagTranslationStore } from '../services/EhTagTranslationStore';
 import { AsyncRequestGate } from '../services/HttpRequestLifecycle';
 import { gallerySiteCandidates } from '../services/EhUrl';
-import { DetailSearchRequest } from '../services/GalleryDetailSupport';
+import { createGalleryDetailLinkFromUrl, DetailSearchRequest } from '../services/GalleryDetailSupport';
 import { CoverSearchSource } from '../model/GalleryModels';
 import { prepareCoverSearchImage } from '../services/CoverSearchSupport';
 import {
@@ -53,6 +53,13 @@ import {
   LANGUAGE_REVISION_KEY,
   createEmptyPage,
   createDetailFromGallery,
+  PENDING_DETAIL_RESTORE_REVISION_KEY,
+  PENDING_DETAIL_RESTORE_ROUTE_KEY,
+  PENDING_DETAIL_RESTORE_SITE_KEY,
+  PENDING_DETAIL_RESTORE_URL_KEY,
+  REMEMBERED_DETAIL_ROUTE_KEY,
+  REMEMBERED_DETAIL_SITE_KEY,
+  REMEMBERED_DETAIL_URL_KEY,
   ROUTE_RESET_REVISION_KEY,
   pushActiveBackHandler,
   readerStartIndex,
@@ -620,6 +627,7 @@ export struct GalleryListScene {
     // Otherwise returning from Settings can miss the existing list cache, briefly render an
     // empty page and start another network refresh.
     this.syncAccountFilterSetting();
+    this.consumePendingDetailRestore();
     if (this.sourceRoute === GalleryRoute.Favorites) {
       this.favoriteCat = recentFavoriteCat;
     }
@@ -729,6 +737,13 @@ export struct GalleryListScene {
   }
 
   aboutToDisappear(): void {
+    // 与 onRouteResetRevision 双保险：条件渲染下卸载期 StorageProp 回调不保证时序，
+    // 卸载钩子是确定执行点；重复写入同值幂等（F-105 问题3 简单全局版）。
+    if (this.showDetail && !this.showReader && this.detailLink.url.length > 0) {
+      AppStorage.setOrCreate(REMEMBERED_DETAIL_URL_KEY, this.detailLink.url);
+      AppStorage.setOrCreate(REMEMBERED_DETAIL_SITE_KEY, this.detailLink.site === GallerySite.Ex ? 1 : 0);
+      AppStorage.setOrCreate(REMEMBERED_DETAIL_ROUTE_KEY, this.sourceRoute.toString());
+    }
     if (this.coverSearchSource !== undefined) {
       this.listRequestGate.begin();
     }
@@ -2232,7 +2247,40 @@ export struct GalleryListScene {
     }, 0);
   }
 
+  @StorageProp(PENDING_DETAIL_RESTORE_REVISION_KEY) @Watch('onPendingDetailRestoreChange') pendingDetailRestoreRevision: number = 0;
+
+  onPendingDetailRestoreChange(): void {
+    this.consumePendingDetailRestore();
+  }
+
+  // 全局返回点恢复：pending 的目标路由是本场景才消费（F-105 问题3 简单全局版）。
+  // aboutToAppear 也调用一次：目标场景尚未挂载时（Index 先 setRootRoute 再发信号）靠挂载期消费。
+  private consumePendingDetailRestore(): void {
+    const pendingRoute = AppStorage.get<string>(PENDING_DETAIL_RESTORE_ROUTE_KEY) ?? '';
+    if (pendingRoute.length === 0 || pendingRoute !== this.sourceRoute.toString()) {
+      return;
+    }
+    const pendingUrl = AppStorage.get<string>(PENDING_DETAIL_RESTORE_URL_KEY) ?? '';
+    AppStorage.setOrCreate(PENDING_DETAIL_RESTORE_URL_KEY, '');
+    AppStorage.setOrCreate(PENDING_DETAIL_RESTORE_ROUTE_KEY, '');
+    if (pendingUrl.length === 0) {
+      return;
+    }
+    const siteIndex = AppStorage.get<number>(PENDING_DETAIL_RESTORE_SITE_KEY) ?? 0;
+    const link = createGalleryDetailLinkFromUrl(pendingUrl, siteIndex === 1 ? GallerySite.Ex : GallerySite.E);
+    if (link !== null) {
+      this.openDetailLink(link);
+    }
+  }
+
   private onRouteResetRevision(): void {
+    // dock 切走时正开着详情：记下链接，返回键可一键回到这本的详情（F-105 问题3）。
+    // 只记 URL 与站点；阅读器/弹层不算（用户没表达「回详情」的意图）。
+    if (this.showDetail && !this.showReader && this.detailLink.url.length > 0) {
+      AppStorage.setOrCreate(REMEMBERED_DETAIL_URL_KEY, this.detailLink.url);
+      AppStorage.setOrCreate(REMEMBERED_DETAIL_SITE_KEY, this.detailLink.site === GallerySite.Ex ? 1 : 0);
+      AppStorage.setOrCreate(REMEMBERED_DETAIL_ROUTE_KEY, this.sourceRoute.toString());
+    }
     if (this.showDetail || this.showReader || this.showSearchResultScene || this.cardActionVisible ||
       this.showBookmarkManager || this.addBookmarkDialogVisible || this.downloadLabelDialogVisible) {
       this.resetToTopLevel();

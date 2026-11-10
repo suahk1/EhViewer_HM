@@ -99,6 +99,7 @@ export struct GalleryDetailOverlayScene {
   onSelectPreview: (preview: GalleryPreview) => void = () => {};
   onJumpPreviewPage: (pageIndex: number) => void = (_pageIndex: number) => {};
   onComments: () => void = () => {};
+  onWriteComment: () => void = () => {};
   onVoteComment: (comment: GalleryComment, vote: number) => void = (_comment: GalleryComment, _vote: number) => {};
   onOpenCommentGalleryLink: (url: string) => void = (_url: string) => {};
   onFavorite: () => void = () => {};
@@ -257,6 +258,7 @@ export struct GalleryDetailScene {
   onSelectPreview: (preview: GalleryPreview) => void = () => {};
   onJumpPreviewPage: (pageIndex: number) => void = (_pageIndex: number) => {};
   onComments: () => void = () => {};
+  onWriteComment: () => void = () => {};
   onVoteComment: (comment: GalleryComment, vote: number) => void = (_comment: GalleryComment, _vote: number) => {};
   onOpenCommentGalleryLink: (url: string) => void = (_url: string) => {};
   onFavorite: () => void = () => {};
@@ -576,6 +578,7 @@ export struct GalleryDetailScene {
                 },
                 translateComments: this.translationEnabled,
                 onComments: this.onComments,
+                onWriteComment: this.onWriteComment,
                 onVoteComment: this.onVoteComment,
                 onOpenGalleryLink: this.onOpenCommentGalleryLink
               })

@@ -19,6 +19,7 @@ export struct DetailComments {
   @Prop translateComments: boolean = false;
   onRetrySection: () => void = () => {};
   onComments: () => void = () => {};
+  onWriteComment: () => void = () => {};
   onVoteComment: (comment: GalleryComment, vote: number) => void = (_comment: GalleryComment, _vote: number) => {};
   onOpenGalleryLink: (url: string) => void = (_url: string) => {};
   @State visibleCommentItems: GalleryComment[] = [];
@@ -63,7 +64,7 @@ export struct DetailComments {
             .backgroundColor(uiCapsuleButtonBackground())
             .borderRadius(uiRadius(17))
             .margin({ left: 10 })
-            .onClick(() => this.onComments())
+            .onClick(() => this.onWriteComment())
         }
       }
       .width('100%')

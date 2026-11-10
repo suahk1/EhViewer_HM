@@ -141,7 +141,8 @@ interface ThumbnailReadyDelivery {
 
 const THUMBNAIL_READY_BATCH_SIZE: number = 1;
 const THUMBNAIL_READY_BATCH_DELAY_MS: number = 48;
-const THUMBNAIL_RETRY_LIMIT: number = 2;
+// 3 次：①正常选路(DoH→系统DNS) ②内置 hosts IP 直连(DNS 全灭回退) ③再来一轮正常
+const THUMBNAIL_RETRY_LIMIT: number = 3;
 const THUMBNAIL_READY_QUEUE: ThumbnailReadyDelivery[] = [];
 let thumbnailReadyScheduled: boolean = false;
 
@@ -256,6 +257,15 @@ export function setActiveBackHandler(handler: (() => boolean) | null): void {
   activeBackHandler = handler;
 }
 
+// 单槽守卫清空：仅当槽里仍是自己的处理器时才清，防止误删后挂载场景的注册。
+// 背景：条件渲染场景卸载时 aboutToDisappear 先于新场景挂载跑，但无守卫的置空
+// 在时序变化时会清掉别人的注册；下载场景就因残留单槽闭包吞掉过返回键（F-105）。
+export function clearActiveBackHandler(handler: () => boolean): void {
+  if (activeBackHandler === handler) {
+    activeBackHandler = null;
+  }
+}
+
 export function pushActiveBackHandler(handler: () => boolean): () => void {
   ACTIVE_BACK_HANDLERS.push(handler);
   return () => {
@@ -313,6 +323,16 @@ export function runDetailBackHandler(): boolean {
 // 切一级页面时递增。列表场景收到后必须把详情/阅读器/弹层等临时层清掉，
 // 否则切回来还停在上一本的详情里（用户看到的「在两个图册之间来回切」）。
 export const ROUTE_RESET_REVISION_KEY: string = 'routeResetRevision';
+// dock 切走时被中断的详情页记忆：返回键恢复用（F-105 问题3）。
+// 只存 url 与站点索引，恢复时 createGalleryDetailLinkFromUrl 重建。
+export const REMEMBERED_DETAIL_URL_KEY: string = 'rememberedDetailUrl';
+export const REMEMBERED_DETAIL_SITE_KEY: string = 'rememberedDetailSite';
+export const REMEMBERED_DETAIL_ROUTE_KEY: string = 'rememberedDetailRoute';
+// 返回点恢复的一次性载荷：Index 侧滑消费时写入，目标场景 watcher/aboutToAppear 读取后清除。
+export const PENDING_DETAIL_RESTORE_URL_KEY: string = 'pendingDetailRestoreUrl';
+export const PENDING_DETAIL_RESTORE_SITE_KEY: string = 'pendingDetailRestoreSite';
+export const PENDING_DETAIL_RESTORE_ROUTE_KEY: string = 'pendingDetailRestoreRoute';
+export const PENDING_DETAIL_RESTORE_REVISION_KEY: string = 'pendingDetailRestoreRevision';
 export const STATUS_BAR_HEIGHT_KEY: string = 'statusBarHeight';
 export const TOP_AVOID_HEIGHT_KEY: string = 'topAvoidHeight';
 export const BOTTOM_AVOID_HEIGHT_KEY: string = 'bottomAvoidHeight';

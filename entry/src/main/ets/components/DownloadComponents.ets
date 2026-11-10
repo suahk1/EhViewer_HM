@@ -120,6 +120,7 @@ export struct DownloadStatusFilterOverlay {
   onCancel: () => void = () => {};
   onApply: () => void = () => {};
   onClearFailed: () => void = () => {};
+  onRetryFailed: () => void = () => {};
 
   build() {
     Stack({ alignContent: Alignment.Center }) {
@@ -182,6 +183,19 @@ export struct DownloadStatusFilterOverlay {
             })
 
           if (this.hasFailed) {
+            Button(uiText('Retry failed'))
+              .height(40)
+              .layoutWeight(1)
+              .fontSize(14)
+              .fontColor(uiMaterialForegroundColor(themePrimaryText()))
+              .backgroundColor(uiMaterialBackground(themeFieldBackground()))
+              .borderRadius(uiRadius(8))
+              .backgroundEffect(uiTransparentButtonBackgroundEffect())
+              .systemMaterial(uiButtonMaterial())
+              .onClick(() => {
+                this.onRetryFailed();
+              })
+
             Button(uiText('Clear failed'))
               .height(40)
               .layoutWeight(1)

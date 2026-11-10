@@ -2010,6 +2010,7 @@ export function zhText(text: string): string {
       return '此操作需要登录 E-Hentai 账号。请从侧边栏登录后再试。';
     case 'Update download link is unavailable': return '下载链接不可用';
     case 'Clear failed': return '清理失败项';
+      case 'Retry failed': return '重试全部失败';
     case 'Failed to load': return '加载失败';
     case 'failed to load': return '加载失败';
     case 'Previews unavailable': return '预览不可用';

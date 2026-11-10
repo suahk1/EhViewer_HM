@@ -715,6 +715,13 @@ export struct GalleryThumb {
     if (!this.mounted || request !== this.thumbnailRequest || url !== this.url) {
       return;
     }
+    if (result === null && url.startsWith('http')) {
+      // 应用网络层（缓存下载+解码）全失败：回退系统 Image 直连网络 URL。
+      // 系统网络栈与应用的 DoH/hosts 选路完全独立，是最后一条没试过的路。
+      this.thumbnailSource = url;
+      this.networkFallbackActive = true;
+      return;
+    }
     this.loadFailed = result === null;
     if (result !== null) {
       this.thumbnailSource = result.pixelMap === undefined ? readerLocalImageSource(result.path) : result.pixelMap;
@@ -738,6 +745,12 @@ export struct GalleryThumb {
 
   private onThumbnailError(): void {
     const request = this.thumbnailRequest;
+    if (this.networkFallbackActive) {
+      // 系统直连也失败：无路可走，显示重试占位
+      this.networkFallbackActive = false;
+      this.loadFailed = true;
+      return;
+    }
     if (this.retryTimer !== -1) {
       return;
     }
@@ -758,6 +771,8 @@ export struct GalleryThumb {
       }
     }, 120) as number;
   }
+
+  private networkFallbackActive: boolean = false;
 
   private hasSiteMismatch(): boolean {
     return thumbnailRequiresExHentai(this.url) && currentGallerySite() !== GallerySite.Ex;

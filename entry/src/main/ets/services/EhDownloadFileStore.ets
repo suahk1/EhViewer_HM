@@ -737,10 +737,39 @@ export class EhDownloadFileStore {
     downloadDirectory: string = ''): string {
     const directory = downloadDirectory.length > 0 && isDirectory(downloadDirectory) ?
       downloadDirectory : this.downloadedGalleryDirectory(context, gallery);
+    return this.findPageImageInDirectory(directory, index, gallery.token.length === 0);
+  }
+
+  // 按文件名页号建「页号→路径」映射：同页双格式（重下载残留 jpg+webp 并存）时
+  // 任取其一，序号空洞不会导致后面所有页错位。滑条缩略图用。
+  buildPageImagePathMap(directory: string): Map<number, string> {
+    const map: Map<number, string> = new Map<number, string>();
+    try {
+      const names = galleryImageNames(fs.listFileSync(directory));
+      for (let i = 0; i < names.length; i++) {
+        const num = numericImageFileNumber(names[i]);
+        if (num < 0 || map.has(num)) {
+          continue;
+        }
+        map.set(num, directory + '/' + names[i]);
+      }
+    } catch (error) {
+    }
+    return map;
+  }
+
+  // 枚举目录内全部页文件（按文件名排序，位置即页序）。本地图册专用：
+  // 下载画廊的页文件按页码命名，直接用 findPageImageInDirectory 逐页取。
+  listPageImagesInDirectory(directory: string): string[] {
+    return cachedImagePaths(directory);
+  }
+
+  // 按目录直查页文件：供滑条缩略图等只需要目录的场景复用（同步、纯本地、零网络）。
+  findPageImageInDirectory(directory: string, index: number, isLocalBook: boolean): string {
     // 本地图册直接按排序位置取页：目录里序号可能断号（下载漏页、用户删过一张），
     // 按序号猜会“第 3 页显示成第 4 页、第 4 页再来一次”，页码和内容整体错位。
     // 排序位置是连续的，总页数就是张数，翻到第 N 页永远是第 N 张。
-    if (gallery.token.length === 0 && index >= 0) {
+    if (isLocalBook && index >= 0) {
       const images = cachedImagePaths(directory);
       return index < images.length ? images[index] : '';
     }

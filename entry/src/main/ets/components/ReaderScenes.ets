@@ -26,6 +26,7 @@ import {
   setEmbeddedReaderActive,
   setReaderTransientStatusBarVisible,
 } from '../services/WindowChromeController';
+import { ehDownloadFileStore } from '../services/EhDownloadFileStore';
 import { READER_TRANSLATION_BUTTON_VISIBLE_KEY, appSettingsStore } from '../services/AppSettingsStore';
 import {
   activeReaderPresetProfile,
@@ -150,6 +151,15 @@ export struct ReaderScene {
   @Prop @Watch('onReaderPagesChange') readerPages: ReaderPageState[] = [];
   @Prop @Watch('onReaderPreviewsChange') readerPreviews: GalleryPreview[] = [];
   @Prop @Watch('onGalleryIdChange') galleryId: number = 0;
+  @Prop @Watch('onSliderSourceChange') downloadGalleryDir: string = '';
+  @Prop @Watch('onSliderSourceChange') downloadGalleryIsLocalBook: boolean = false;
+  // 本地画廊的全量页路径表：进阅读器后台枚举一次，滑条拖到任何未浏览页都有缩略图
+  // @State：枚举完成后必须触发重渲染，滑条气泡才能拿到非空的缩略图路径
+  @State sliderLocalPaths: string[] = [];
+  private sliderLocalPathsKey: string = '';
+  // 从已加载页的缓存路径反推出的画廊目录：host 的 detail 未就绪时 downloadGalleryDir
+  // 是空串，用它兜底（同一画廊所有页在同一目录）。
+  @State inferredGalleryDir: string = '';
   @Prop statusText: string = '';
   @Prop @Watch('onPageIndexChange') pageIndex: number = 0;
   @Prop @Watch('onTotalPagesChange') totalPages: number = 0;
@@ -348,6 +358,7 @@ export struct ReaderScene {
   };
 
   aboutToAppear(): void {
+    this.scheduleSliderLocalPathRefresh();
     if (this.transientDisappearCleanupTimer !== -1) {
       clearTimeout(this.transientDisappearCleanupTimer);
       this.transientDisappearCleanupTimer = -1;
@@ -666,6 +677,7 @@ export struct ReaderScene {
   }
 
   onReaderPagesChange(): void {
+    this.inferGalleryDirFromPages();
     this.scheduleImageProcessingPrefetch();
   }
 
@@ -682,6 +694,7 @@ export struct ReaderScene {
   }
 
   onTotalPagesChange(): void {
+    this.scheduleSliderLocalPathRefresh();
     this.resetPairedViewport();
     this.currentIndex = this.pageGroupAnchorForPageIndex(this.pageIndex);
     this.sliderLiveIndex = this.clampReaderPageIndex(this.currentIndex);
@@ -2589,9 +2602,10 @@ export struct ReaderScene {
       } else if (relY > 2.0 / 3.0) {
         this.nextReaderPage();
       } else if (relX < 1.0 / 3.0 || relX > 2.0 / 3.0) {
-        this.showSlider();
-      } else {
+        // 与水平模式一致：正中呼出滑条，两侧呼出菜单
         this.showMenu();
+      } else {
+        this.showSlider();
       }
       return;
     }
@@ -2603,9 +2617,10 @@ export struct ReaderScene {
       // Right tap: next for LTR, prev for RTL
       this.jumpToAdjacentPageGroup(this.swiperReversed ? -1 : 1);
     } else if (relY < 2.0 / 3.0) {
-      this.showMenu();
-    } else {
+      // 对齐安卓版习惯：点中间直接呼出拉动跳页滑条（高频），菜单移到底部点按（低频）
       this.showSlider();
+    } else {
+      this.showMenu();
     }
   }
 
@@ -2628,6 +2643,111 @@ export struct ReaderScene {
       return blockRadius;
     }
     return blockRadius + Math.max(0, Math.min(usableWidth, usableWidth * this.sliderLiveIndex / (total - 1)));
+  }
+
+  // 滑条目标页的本地缩略图路径：只查本地缓存（cachedImagePath），没有任何网络请求；
+  // 未下载/缓存未命中的页返回空串，气泡回退为纯页码。
+  onSliderSourceChange(): void {
+    // 目录 prop 是详情加载完成后异步传入的，晚到必须重刷枚举表，否则缩略图永远缺失
+    this.scheduleSliderLocalPathRefresh();
+  }
+
+  private effectiveGalleryDir(): string {
+    if (this.downloadGalleryDir.length > 0) {
+      return this.downloadGalleryDir;
+    }
+    return this.inferredGalleryDir;
+  }
+
+  // 从任意已加载页的 cachedImagePath 反推画廊目录：页路径的 dirname 就是全画廊目录。
+  private inferGalleryDirFromPages(): void {
+    if (this.inferredGalleryDir.length > 0) {
+      return;
+    }
+    for (let i = 0; i < this.readerPages.length; i++) {
+      const p = this.readerPages[i].page.cachedImagePath;
+      if (p !== undefined && p.length > 0) {
+        const plain = stripFileScheme(p);
+        const dir = plain.substring(0, plain.lastIndexOf('/'));
+        if (dir.length > 0) {
+          this.inferredGalleryDir = dir;
+          this.scheduleSliderLocalPathRefresh();
+          return;
+        }
+      }
+    }
+  }
+
+  private scheduleSliderLocalPathRefresh(): void {
+    setTimeout(() => {
+      this.refreshSliderLocalPaths();
+    }, 0);
+  }
+
+  // 后台一次性枚举本地画廊的全量页路径（毫秒级），拖滑条时直接查表，不再受
+  // 「页必须浏览过才有 cachedImagePath」的懒加载限制。
+  private refreshSliderLocalPaths(): void {
+    const dir = this.effectiveGalleryDir();
+    const key = this.galleryId.toString() + ':' + this.totalPages.toString() + ':' +
+      dir;
+    if (key === this.sliderLocalPathsKey) {
+      return;
+    }
+    this.sliderLocalPathsKey = key;
+    this.sliderLocalPaths = [];
+    if (dir.length === 0 || this.totalPages <= 0) {
+      return;
+    }
+    // 首选：按文件名页号映射（同页双格式/序号空洞都不错位）
+    const map = ehDownloadFileStore.buildPageImagePathMap(dir);
+    if (map.size > 0) {
+      const paths: string[] = [];
+      let hits = 0;
+      for (let i = 0; i < this.totalPages; i++) {
+        const p = map.get(i + 1);
+        const hit = p !== undefined && p.length > 0;
+        if (hit) {
+          hits++;
+        }
+        paths.push(hit ? p : '');
+      }
+      // 命中率过半才启用映射，避免目录与页数对不上号的画廊整体错位
+      if (hits * 2 >= this.totalPages) {
+        this.sliderLocalPaths = paths;
+        return;
+      }
+    }
+    // 次选：本地图册目录位置=页序
+    if (this.downloadGalleryIsLocalBook) {
+      this.sliderLocalPaths = ehDownloadFileStore.listPageImagesInDirectory(dir);
+      return;
+    }
+    // 最后：逐页猜文件名（旧行为）
+    const fallback: string[] = [];
+    for (let i = 0; i < this.totalPages; i++) {
+      fallback.push(ehDownloadFileStore.findPageImageInDirectory(dir, i, false));
+    }
+    this.sliderLocalPaths = fallback;
+  }
+
+  private sliderThumbPath(): string {
+    if (this.sliderLocalPaths.length === this.totalPages && this.totalPages > 0) {
+      const path = this.sliderLocalPaths[this.sliderLiveIndex];
+      return path !== undefined ? usableReaderLocalPath(stripFileScheme(path)) : '';
+    }
+    const page = this.pageForIndex(this.sliderLiveIndex);
+    const cached = this.localImagePathForPage(page);
+    if (cached.length > 0) {
+      return cached;
+    }
+    // 枚举表未就绪时按页码直查下载目录（同步、纯本地），未下载画廊回退纯页码。
+    const dir = this.effectiveGalleryDir();
+    if (dir.length === 0) {
+      return '';
+    }
+    const path = ehDownloadFileStore.findPageImageInDirectory(
+      dir, this.sliderLiveIndex, this.downloadGalleryIsLocalBook);
+    return path.length > 0 ? usableReaderLocalPath(stripFileScheme(path)) : '';
   }
 
   private sliderPageText(): string {
@@ -3483,6 +3603,7 @@ export struct ReaderScene {
           progressText: this.progressText(),
           sliderDragging: this.sliderDragging,
           sliderPageText: this.sliderPageText(),
+          sliderThumbPath: this.sliderThumbPath(),
           sliderBubbleX: this.sliderBubbleX(),
           sliderTrackWidth: this.sliderTrackWidth,
           sliderLiveIndex: this.sliderLiveIndex,

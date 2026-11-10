@@ -44,7 +44,7 @@ import {
   uiRadius,
   uiTabHeight
 } from '../shared/AppSurfaceStyle';
-import { LANGUAGE_REVISION_KEY, STATUS_BAR_HEIGHT_KEY, setActiveBackHandler, runDetailBackHandler, createEmptyDetail, createEmptyTopListDetail, createEmptyTopListInfo, createEmptyTopListBucket, createEmptyTopListItem, cloneGalleryDetail, cloneGalleryInfo, cloneTopListDetail, currentGallerySite, uiText } from '../shared/AppRuntime';
+import { LANGUAGE_REVISION_KEY, STATUS_BAR_HEIGHT_KEY, setActiveBackHandler, runDetailBackHandler, createEmptyDetail, createEmptyTopListDetail, createEmptyTopListInfo, createEmptyTopListBucket, createEmptyTopListItem, cloneGalleryDetail, cloneGalleryInfo, cloneTopListDetail, currentGallerySite, uiText, clearActiveBackHandler } from '../shared/AppRuntime';
 import { ActionBubble, GalleryListScene, GalleryListStateView } from './GalleryScenes';
 import { GalleryDetailHostScene } from './GalleryDetailHostScene';
 import { ReaderSessionScene } from './ReaderHostScene';
@@ -175,14 +175,18 @@ export struct TopListScene {
     this.restoreEmbeddedContinuationIfPresent();
     this.syncSceneContentWidthFromWindow();
     markCurrentRouteRightPane(this.useSplitLayout());
-    setActiveBackHandler(() => this.handleSystemBack());
+    setActiveBackHandler(this.boundSystemBack);
     this.loadTopList();
     setTimeout(() => {
       this.syncSceneContentWidthFromWindow();
     }, 0);
   }
 
+  // 稳定闭包 + 卸载守卫清槽：防止残留单槽处理器吞返回键（F-105 问题3）。
+  private boundSystemBack: () => boolean = () => this.handleSystemBack();
+
   aboutToDisappear(): void {
+    clearActiveBackHandler(this.boundSystemBack);
     this.saveNavigationCache();
   }
 
@@ -326,7 +330,7 @@ export struct TopListScene {
     this.tagSearchImageShowExpunged = false;
     this.saveNavigationCache();
     setTimeout(() => {
-      setActiveBackHandler(() => this.handleSystemBack());
+      setActiveBackHandler(this.boundSystemBack);
     }, 0);
   }
 
@@ -435,7 +439,7 @@ export struct TopListScene {
     this.galleryUseForcedMode = false;
     this.saveNavigationCache();
     setTimeout(() => {
-      setActiveBackHandler(() => this.handleSystemBack());
+      setActiveBackHandler(this.boundSystemBack);
     }, 0);
   }
 
@@ -507,7 +511,7 @@ export struct TopListScene {
 
   private restoreBackHandler(): void {
     setTimeout(() => {
-      setActiveBackHandler(() => this.handleSystemBack());
+      setActiveBackHandler(this.boundSystemBack);
     }, 0);
   }
 

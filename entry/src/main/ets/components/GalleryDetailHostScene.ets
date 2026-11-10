@@ -698,7 +698,17 @@ export struct GalleryDetailHostScene {
     if (!this.detailLoaded) {
       return;
     }
-    // 底部浮层输入条：评论列表仍可在原页面继续浏览
+    // 「查看全部评论」：整页评论场景（完整列表 + 内置输入框），F-105 问题4。
+    this.showComments = true;
+    this.saveNavigationState();
+    this.renderVersion++;
+  }
+
+  // 「写评论」：底部浮层输入条，输入时详情仍可见。
+  private openCommentComposer(): void {
+    if (!this.detailLoaded) {
+      return;
+    }
     this.commentBarVisible = true;
     this.commentBarOpenedAtMs = Date.now();
     // 记录打开时刻：遮罩要在 400ms 后才开始响应点击，避免「点写评论」这一次点击
@@ -2045,6 +2055,7 @@ export struct GalleryDetailHostScene {
           this.jumpPreviewPage(pageIndex);
         },
         onComments: () => { this.openComments(); },
+        onWriteComment: () => { this.openCommentComposer(); },
         onVoteComment: (comment: GalleryComment, vote: number) => { this.voteDetailComment(comment, vote); },
         onOpenCommentGalleryLink: (url: string) => { this.openCommentGalleryLink(url); },
         onFavorite: () => { this.toggleFavoriteDetail(); },

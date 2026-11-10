@@ -1788,6 +1788,42 @@ function resetFrontingAdmissionHealth(): void {
   dispatchFrontingAdmissions();
 }
 
+// DNS 全灭时的最后回退：取内置 hosts 表里该域名的首个 IPv4，构造「IP 直连 + Host 头」请求。
+// 零 DNS 依赖（不查 DoH 也不用系统 DNS），专治 DoH 服务器不可达 + 系统 DNS 被污染的设备。
+// 没有内置 IP 的域名返回 null，调用方保持原选路。
+export function builtInHostPlanForUrl(url: string): EhRequestPlan | null {
+  const host = requestHost(url);
+  if (host.length === 0) {
+    return null;
+  }
+  const rules: HostRule[] = [];
+  for (let i = 0; i < BUILT_IN_RULES.length; i++) {
+    if (BUILT_IN_RULES[i].host === host) {
+      rules.push(BUILT_IN_RULES[i]);
+    }
+  }
+  for (let i = 0; i < BUILT_EX_RULES.length; i++) {
+    if (BUILT_EX_RULES[i].host === host) {
+      rules.push(BUILT_EX_RULES[i]);
+    }
+  }
+  for (let i = 0; i < rules.length; i++) {
+    for (let j = 0; j < rules[i].ips.length; j++) {
+      const ip = rules[i].ips[j];
+      // 只用 IPv4 字面量：IPv6 裸地址在 URL 里需要方括号转写，兼容面窄，不进回退链
+      if (ip.indexOf(':') >= 0) {
+        continue;
+      }
+      return {
+        url: replaceUrlHost(url, ip),
+        host: requestHostHeader(url),
+        fronted: false
+      };
+    }
+  }
+  return null;
+}
+
 function requestHost(url: string): string {
   const match = /^https?:\/\/([^\/?#:]+)/i.exec(url);
   return match === null ? '' : match[1];
