@@ -1,0 +1,496 @@
+import { GalleryTagGroup, GalleryTagInfo } from '../../model/GalleryModels';
+import { cloneSearchSuggestions, cloneTagInfo} from '../../shared/GalleryClones';
+import { DetailSectionRetry } from './DetailSectionRetry';
+import { ehTagTranslationStore, EhTagSuggestion } from '../../services/EhTagTranslationStore';
+import {
+  LANGUAGE_REVISION_KEY,
+  shouldShowTagTranslations,
+  tagNamespaceDisplayName,
+  uiText
+} from '../../shared/AppRuntime';
+import { sortedStringKey, toggleStringValue } from '../../shared/AppRuntime';
+import {
+  themeAccentTextColor,
+  themeFieldBackground,
+  themeOnPrimaryText,
+  themePrimaryColor,
+  themePrimaryText,
+  themeSecondaryText,
+  themeSelectedBackgroundLight,
+  themeSelectedIndicatorColor,
+  themeSelectedText,
+  themeSurface,
+  themeSurfaceVariant,
+  themeTertiaryText
+} from '../../shared/AppPalette';
+import {
+  uiButtonMaterial,
+  uiTransparentButtonBackgroundEffect,
+  uiMaterialBackground,
+  uiMaterialForegroundColor,
+  uiRadius,
+  uiSearchFieldHeight,
+} from '../../shared/AppSurfaceStyle';
+import {
+  buildSearchSuggestions,
+  SearchSuggestionItem,
+  SearchSuggestionList,
+  SearchSummaryStrip
+} from '../GallerySearchScenes';
+
+@Component
+export struct DetailTags {
+  @Prop @Watch('syncExternalData') renderVersion: number = 0;
+  @Prop @Watch('syncExternalData') tags: GalleryTagGroup[] = [];
+  @Prop @Watch('syncExternalData') isDetailLoaded: boolean = false;
+  @Prop sectionFailed: boolean = false;
+  @Prop sectionMessage: string = '';
+  onRetrySection: () => void = () => {};
+  onTagSearch: (namespace: string, tag: string) => void = (_namespace: string, _tag: string) => {};
+  onAddTag: (fullTag: string) => void = (_fullTag: string) => {};
+  onOpenTagVote: (info: GalleryTagInfo) => void = (_info: GalleryTagInfo) => {};
+  @State visibleTags: GalleryTagGroup[] = [];
+  @State tagRevision: number = 0;
+  @State editMode: boolean = false;
+  @State addTagText: string = '';
+  @State suggestions: SearchSuggestionItem[] = [];
+  @State selectedTagNamespaces: string[] = [];
+  @State suggestionRevision: number = 0;
+
+  aboutToAppear(): void {
+    this.syncExternalData();
+  }
+
+  private syncExternalData(): void {
+    this.visibleTags = cloneTagGroups(this.tags);
+    this.tagRevision++;
+    if (!this.isDetailLoaded) {
+      this.suggestions = [];
+    }
+  }
+
+  private selectedNamespaceKey(): string {
+    return sortedStringKey(this.selectedTagNamespaces);
+  }
+
+  private setEditMode(value: boolean): void {
+    this.getUIContext().animateTo({ duration: 180, curve: Curve.EaseInOut }, () => {
+      this.editMode = value;
+      if (!value) {
+        this.addTagText = '';
+        this.suggestions = [];
+      }
+    });
+  }
+
+  private updateAddTagText(value: string): void {
+    this.addTagText = value;
+    this.refreshSuggestions();
+  }
+
+  private refreshSuggestions(): void {
+    const active = activeTagText(this.addTagText);
+    if (active.length === 0) {
+      this.suggestions = [];
+      this.suggestionRevision++;
+      return;
+    }
+    this.suggestions = cloneSearchSuggestions(buildDetailTagSuggestions(this.addTagText, 0, this.selectedTagNamespaces));
+    this.suggestionRevision++;
+  }
+
+  private toggleTagNamespace(namespace: string): void {
+    this.selectedTagNamespaces = toggleStringValue(this.selectedTagNamespaces, namespace);
+    this.refreshSuggestions();
+  }
+
+  private applySuggestion(suggestion: SearchSuggestionItem): void {
+    if (suggestion.kind !== 'tag') {
+      return;
+    }
+    this.submitAddTag(suggestionFullTag(suggestion));
+  }
+
+  private submitCurrentTag(): void {
+    this.submitAddTag(this.addTagText);
+  }
+
+  private submitAddTag(fullTag: string): void {
+    const tag = normalizeSubmittedTag(fullTag, this.selectedTagNamespaces);
+    if (tag.length === 0) {
+      return;
+    }
+    this.onAddTag(tag);
+    this.addTagText = '';
+    this.suggestions = [];
+    this.suggestionRevision++;
+  }
+
+  private selectTag(info: GalleryTagInfo): void {
+    if (!this.editMode) {
+      this.onTagSearch(info.namespace, info.tag);
+      return;
+    }
+    this.onOpenTagVote(cloneTagInfo(info));
+  }
+
+  private longPressTag(info: GalleryTagInfo): void {
+    this.onOpenTagVote(cloneTagInfo(info));
+  }
+
+  build() {
+    Column() {
+        Row() {
+          Text(uiText('Tags'))
+            .fontSize(15)
+            .fontWeight(FontWeight.Medium)
+            .fontColor(themePrimaryText())
+            .layoutWeight(1)
+          Button({ type: ButtonType.Normal, stateEffect: true }) {
+            SymbolGlyph(this.editMode ? $r('sys.symbol.xmark') : $r('sys.symbol.plus'))
+              .fontSize(18)
+              .fontColor([uiMaterialForegroundColor(this.editMode ? themeOnPrimaryText() :
+                themeAccentTextColor())])
+          }
+          .width(34)
+          .height(34)
+          .borderRadius(uiRadius(17))
+          .padding(0)
+          .backgroundColor(uiMaterialBackground(this.editMode ? themePrimaryColor() : themeSurfaceVariant()))
+          .enabled(this.isDetailLoaded)
+          .backgroundEffect(uiTransparentButtonBackgroundEffect())
+          .systemMaterial(uiButtonMaterial())
+          .onClick(() => {
+            this.setEditMode(!this.editMode);
+          })
+        }
+        .width('100%')
+        .alignItems(VerticalAlign.Center)
+
+        if (this.sectionFailed) {
+          DetailSectionRetry({
+            sectionTitle: 'Tags',
+            message: this.sectionMessage,
+            onRetry: () => {
+              this.onRetrySection();
+            }
+          })
+            .margin({ top: 8 })
+        } else if (!this.isDetailLoaded) {
+          Text(uiText('Loading tags...'))
+            .fontSize(12)
+            .fontColor(themeSecondaryText())
+            .margin({ top: 8 })
+        } else if (this.visibleTags.length === 0) {
+          Text(uiText('No tags parsed'))
+            .fontSize(12)
+            .fontColor(themeSecondaryText())
+            .margin({ top: 8 })
+        } else {
+          Column({ space: 4 }) {
+            ForEach(this.visibleTags, (group: GalleryTagGroup) => {
+              TagGroupRow({
+                tagRevision: this.tagRevision,
+                group: group,
+                editMode: this.editMode,
+                onSelectTag: (info: GalleryTagInfo) => {
+                  this.selectTag(info);
+                },
+                onLongPressTag: (info: GalleryTagInfo) => {
+                  this.longPressTag(info);
+                }
+              })
+            }, (group: GalleryTagGroup) => group.namespace + ':' + this.tagRevision.toString())
+          }
+          .width('100%')
+          .margin({ top: 8 })
+        }
+
+        if (this.editMode && this.isDetailLoaded) {
+          Column({ space: 8 }) {
+            Row({ space: 8 }) {
+              TextInput({ text: this.addTagText, placeholder: uiText('Enter new tag') })
+                .height(uiSearchFieldHeight())
+                .fontSize(14)
+                .fontColor(themePrimaryText())
+                .placeholderColor(themeTertiaryText())
+                .backgroundColor(themeFieldBackground())
+                .layoutWeight(1)
+                .padding({ left: 10, right: 10 })
+                .borderRadius(uiRadius(uiSearchFieldHeight() / 2))
+                .onChange((value: string) => {
+                  this.updateAddTagText(value);
+                })
+                .onFocus(() => {
+                  this.refreshSuggestions();
+                })
+              Button({ type: ButtonType.Normal, stateEffect: true }) {
+                SymbolGlyph($r('sys.symbol.plus'))
+                  .fontSize(18)
+                  .fontColor([uiMaterialForegroundColor(themeOnPrimaryText())])
+              }
+              .width(42)
+              .height(38)
+              .borderRadius(uiRadius(6))
+              .padding(0)
+              .backgroundColor(uiMaterialBackground(themePrimaryColor()))
+              .backgroundEffect(uiTransparentButtonBackgroundEffect())
+              .systemMaterial(uiButtonMaterial())
+              .onClick(() => {
+                this.submitCurrentTag();
+              })
+            }
+            .width('100%')
+
+            if (this.addTagText.trim().length > 0) {
+              SearchSummaryStrip({
+                selectedTagNamespaces: this.selectedTagNamespaces,
+                selectedTagNamespaceKey: this.selectedNamespaceKey(),
+                revision: this.suggestionRevision,
+                onToggleTagNamespace: (namespace: string) => {
+                  this.toggleTagNamespace(namespace);
+                }
+              })
+            }
+
+            if (this.suggestions.length > 0) {
+              SearchSuggestionList({
+                suggestions: this.suggestions,
+                revision: this.suggestionRevision,
+                onSelect: (suggestion: SearchSuggestionItem) => {
+                  this.applySuggestion(suggestion);
+                }
+              })
+              .width('100%')
+              .height(this.suggestionListHeight())
+            }
+          }
+          .width('100%')
+          .margin({ top: 10 })
+          .transition(TransitionEffect.OPACITY
+            .combine(TransitionEffect.translate({ y: -8 }))
+            .animation({ duration: 180, curve: Curve.EaseInOut }))
+        }
+      }
+      .alignItems(HorizontalAlign.Start)
+      .width('100%')
+      .padding(16)
+      .backgroundColor(themeSurface())
+    .width('100%')
+  }
+
+  private suggestionListHeight(): number {
+    if (this.suggestions.length <= 2) {
+      return 58;
+    }
+    if (this.suggestions.length <= 6) {
+      return 158;
+    }
+    return 260;
+  }
+}
+
+@Component
+export struct TagGroupRow {
+  @Prop tagRevision: number = 0;
+  @Prop group: GalleryTagGroup = { namespace: '', tags: [] };
+  @Prop editMode: boolean = false;
+  @StorageProp(LANGUAGE_REVISION_KEY) languageRevision: number = 0;
+  onSelectTag: (info: GalleryTagInfo) => void = (_info: GalleryTagInfo) => {};
+  onLongPressTag: (info: GalleryTagInfo) => void = (_info: GalleryTagInfo) => {};
+  private lastLongPressAt: number = 0;
+
+  private tagLabel(tag: string): string {
+    if (!shouldShowTagTranslations()) {
+      return tag;
+    }
+    const translated = ehTagTranslationStore.translate(this.group.namespace, tag);
+    return translated.length > 0 ? translated : tag;
+  }
+
+  private tagInfo(tag: string): GalleryTagInfo {
+    const infos = this.group.tagInfos;
+    if (infos !== undefined) {
+      for (let i = 0; i < infos.length; i++) {
+        if (infos[i].tag === tag || infos[i].fullTag === this.group.namespace + ':' + tag) {
+          return cloneTagInfo(infos[i]);
+        }
+      }
+    }
+    return {
+      id: 0,
+      namespace: this.group.namespace,
+      tag: tag,
+      fullTag: this.group.namespace + ':' + tag
+    };
+  }
+
+  private tagBackgroundColor(): string {
+    return this.editMode ? themeSelectedBackgroundLight() : themeSurfaceVariant();
+  }
+
+  private tagTextColor(): string {
+    return this.editMode ? themeSelectedText() : themePrimaryText();
+  }
+
+  build() {
+    Row() {
+      Text(tagNamespaceDisplayName(this.group.namespace))
+        .fontSize(14)
+        .fontColor(themeSecondaryText())
+        .width(80)
+      Flex({ wrap: FlexWrap.Wrap }) {
+        ForEach(this.group.tags, (tag: string) => {
+          Button({ type: ButtonType.Normal, stateEffect: true }) {
+            Row({ space: 4 }) {
+              if (this.editMode) {
+                SymbolGlyph($r('sys.symbol.arrow_up_circle'))
+                  .fontSize(12)
+                  .fontColor([uiMaterialForegroundColor(themeSelectedIndicatorColor())])
+              }
+              Text(this.tagLabel(tag))
+                .fontSize(12)
+                .fontColor(uiMaterialForegroundColor(this.tagTextColor()))
+                .maxLines(1)
+                .textOverflow({ overflow: TextOverflow.Ellipsis })
+            }
+          }
+          .height(26)
+          // 标签数量可能上百，逐个使用系统材质/背景模糊会显著拖慢滚动，这里用纯色背景。
+          .backgroundColor(this.tagBackgroundColor())
+          .margin({ right: 6, bottom: 6 })
+          .padding({ left: 8, right: 8 })
+          .borderRadius(uiRadius(4))
+          .onClick(() => {
+            if (Date.now() - this.lastLongPressAt < 600) {
+              return;
+            }
+            this.onSelectTag(this.tagInfo(tag));
+          })
+          .gesture(
+            LongPressGesture({ repeat: false })
+              .onAction(() => {
+                this.lastLongPressAt = Date.now();
+                this.onLongPressTag(this.tagInfo(tag));
+              })
+          )
+        }, (tag: string) => this.group.namespace + ':' + tag)
+      }
+      .layoutWeight(1)
+    }
+    .width('100%')
+  }
+}
+
+function cloneTagGroups(groups: GalleryTagGroup[]): GalleryTagGroup[] {
+  const result: GalleryTagGroup[] = [];
+  for (let i = 0; i < groups.length; i++) {
+    result.push({
+      namespace: groups[i].namespace,
+      tags: groups[i].tags.slice(),
+      tagInfos: cloneTagInfoList(groups[i].tagInfos)
+    });
+  }
+  return result;
+}
+
+function cloneTagInfoList(infos: GalleryTagInfo[] | undefined): GalleryTagInfo[] | undefined {
+  if (infos === undefined) {
+    return undefined;
+  }
+  const result: GalleryTagInfo[] = [];
+  for (let i = 0; i < infos.length; i++) {
+    result.push(cloneTagInfo(infos[i]));
+  }
+  return result;
+}
+
+function buildDetailTagSuggestions(text: string, limit: number, namespaces: string[]): SearchSuggestionItem[] {
+  const trimmed = text.trim();
+  const colon = trimmed.indexOf(':');
+  if (colon < 0) {
+    return buildSearchSuggestions(trimmed, limit, namespaces).filter((item: SearchSuggestionItem) => item.kind === 'tag');
+  }
+  const namespace = normalizeTagNamespace(trimmed.substring(0, colon));
+  const keyword = trimmed.substring(colon + 1).trim();
+  if (keyword.length === 0) {
+    return [];
+  }
+  const selectedNamespaces = namespace.length > 0 ? [namespace] : namespaces;
+  const tags = ehTagTranslationStore.suggest(keyword, limit, selectedNamespaces);
+  const result: SearchSuggestionItem[] = [];
+  for (let i = 0; i < tags.length; i++) {
+    const tag: EhTagSuggestion = tags[i];
+    const translated = shouldShowTagTranslations() && tag.translated.length > 0;
+    result.push({
+      kind: 'tag',
+      title: translated ? tag.translated : tag.tag,
+      subtitle: translated ? tag.tag : '',
+      query: tag.tag,
+      translated: tag.translated,
+      namespace: tag.namespace
+    });
+  }
+  return result;
+}
+
+function activeTagText(text: string): string {
+  const trimmed = text.trim();
+  const colon = trimmed.indexOf(':');
+  return colon < 0 ? trimmed : trimmed.substring(colon + 1).trim();
+}
+
+function suggestionFullTag(suggestion: SearchSuggestionItem): string {
+  const tag = suggestion.query.trim().replace(/\s+/g, ' ');
+  const namespace = suggestion.namespace === undefined ? '' : suggestion.namespace.trim();
+  if (tag.length === 0 || tag.indexOf(':') >= 0 || namespace.length === 0) {
+    return tag;
+  }
+  return namespace + ':' + tag;
+}
+
+function normalizeSubmittedTag(tag: string, namespaces: string[]): string {
+  const normalized = tag.trim().replace(/\s+/g, ' ');
+  if (normalized.length === 0 || normalized.indexOf(':') >= 0 || namespaces.length !== 1) {
+    return normalized;
+  }
+  return namespaces[0] + ':' + normalized;
+}
+
+function normalizeTagNamespace(namespace: string): string {
+  const value = namespace.trim().toLowerCase();
+  if (value === 'a' || value === 'art' || value === 'artist') {
+    return 'artist';
+  }
+  if (value === 'f' || value === 'female') {
+    return 'female';
+  }
+  if (value === 'm' || value === 'male') {
+    return 'male';
+  }
+  if (value === 'p' || value === 'parody') {
+    return 'parody';
+  }
+  if (value === 'c' || value === 'char' || value === 'character') {
+    return 'character';
+  }
+  if (value === 'g' || value === 'group') {
+    return 'group';
+  }
+  if (value === 'l' || value === 'lang' || value === 'language') {
+    return 'language';
+  }
+  if (value === 'o' || value === 'other') {
+    return 'other';
+  }
+  if (value === 'cos' || value === 'cosplayer') {
+    return 'cosplayer';
+  }
+  if (value === 'loc' || value === 'location') {
+    return 'location';
+  }
+  if (value === 'x' || value === 'mix' || value === 'mixed') {
+    return 'mixed';
+  }
+  return value;
+}

@@ -1,0 +1,754 @@
+import { AbilityConstant, Configuration, ConfigurationConstant, errorManager, UIAbility, Want } from '@kit.AbilityKit';
+import { window } from '@kit.ArkUI';
+import { preferences } from '@kit.ArkData';
+import { fileUri } from '@kit.CoreFileKit';
+import { userAuth } from '@kit.UserAuthenticationKit';
+import { configureEhWebDns } from '../services/WebRuntimeSupport';
+import {
+  APP_FOREGROUND_REVISION_KEY,
+  EMBEDDED_READER_ACTIVE_KEY,
+  MAIN_WINDOW_KEY,
+  applyAppChromeImmersiveMode,
+  applyAppColorMode,
+  isEmbeddedReaderActive,
+  prepareAppChromeBeforeContent,
+  rememberMainWindow,
+  rememberMainWindowWidthPx
+} from '../services/WindowChromeController';
+import { applyWindowPrivacyMode, WINDOW_PRIVACY_STATUS_KEY } from '../services/WindowPrivacy';
+import { appSettingsStore, FLOATING_ACTION_SIDE_REVISION_KEY } from '../services/AppSettingsStore';
+import {
+  COMMENT_BLACKLIST_REVISION_KEY,
+  ehCommentBlacklistStore
+} from '../services/EhCommentBlacklistStore';
+import { appLog } from '../services/AppLogService';
+import { DEBUG_SETTINGS_PANEL_KEY, runActiveBackHandler } from '../shared/AppRuntime';
+import { DOWNLOAD_NOTIFICATION_OPEN_DIRECTORY_KEY } from '../services/DownloadNotificationSupport';
+import {
+  pauseBackgroundImageRequests,
+  readerImageCache,
+  resumeBackgroundImageRequests
+} from '../services/ReaderImageCache';
+import { ehDownloadManager } from '../services/EhDownloadManager';
+import { remoteStorageSyncService } from '../services/RemoteStorageSyncService';
+import { DAILY_CHECK_IN_FOREGROUND_REVISION_KEY } from '../services/EhDailyCheckInService';
+import {
+  buildReaderContinuationSnapshot,
+  continuationRoute,
+  EH_CONTINUATION_ROUTE_KEY,
+  putContinuationSnapshot,
+  readContinuationSnapshot,
+  setPendingContinuationSnapshot,
+  applyMissionContinuationSetting,
+  isMultiDeviceContinuationEnabled
+} from '../services/DistributedContinuationService';
+import { readerSessionStore } from '../services/ReaderSessionStore';
+import { EH_SYSTEM_COLOR_MODE_DARK, EH_SYSTEM_COLOR_MODE_KEY } from '../shared/AppPalette';
+import {
+  ensureEhHostRules,
+  isEhDirectConnectionProbeEnabled,
+  registerEhNetworkChangeListener,
+  refreshEhConnectionsAfterForeground,
+  startEhDirectConnectionProbe,
+  startEhFrontingBenchmark,
+  unregisterEhNetworkChangeListener
+} from '../services/NetworkConfig';
+import {
+  resetCellularNetworkWarningConfirmation,
+  shouldWarnForCellularNetwork
+} from '../services/CellularNetworkGuard';
+import {
+  BOTTOM_AVOID_HEIGHT_KEY,
+  IDENTITY_AUTH_FACE_FIRST,
+  IDENTITY_AUTH_FINGERPRINT_FIRST,
+  IDENTITY_AUTH_LOCKED_KEY,
+  IDENTITY_AUTH_OFF,
+  IDENTITY_AUTH_PASSWORD_FIRST,
+  THEME_REVISION_KEY,
+  notifyLanguageChanged,
+  notifyThemeChanged,
+  normalizeIdentityAuthenticationOption,
+  STATUS_BAR_HEIGHT_KEY,
+  TOP_AVOID_HEIGHT_KEY,
+  uiText
+} from '../shared/AppRuntime';
+import { LANGUAGE_REVISION_KEY } from '../shared/AppStrings';
+
+const SETTINGS_PREF_NAME: string = 'ehviewer_settings';
+const SETTINGS_VALUES_KEY: string = 'values';
+// statusBarHeight / topAvoidHeight / bottomAvoidHeight / languageRevision 这几个 key
+// 只允许在 AppRuntime、AppStrings 里定义一次。这里再写一份，改 key 时就会漏改，
+// AppStorage 被拆成两个 key，顶栏和底栏一起失灵。
+const STARTUP_CACHE_PRUNE_DELAY_MS: number = 1500;
+
+interface SettingEntry {
+  key: string;
+  value: string;
+}
+
+export default class EntryAbility extends UIAbility {
+  private windowStage: window.WindowStage | undefined = undefined;
+  private authPending: boolean = false;
+  private identityAuthGraceUntilMs: number = 0;
+  private startupDirectProbeToast: string = '';
+  private mainContentLoaded: boolean = false;
+  private pendingDownloadDirectory: string = '';
+  private appWasBackground: boolean = false;
+  // Largest bottom avoid (nav bar / gesture indicator) height observed this session, in px.
+  // The reader hides system bars (setWindowSystemBarEnable([])), which makes the live avoid
+  // area report 0 — but the gesture indicator zone physically persists. We keep the max-seen
+  // value so the reader can still inset its bottom bar clear of that zone.
+  private maxBottomAvoidPx: number = 0;
+  private lastTopAvoidPx: number = 0;
+
+  onCreate(want: Want): void {
+    this.registerCrashObserver();
+    this.captureDownloadDirectory(want);
+    this.captureContinuation(want);
+    this.captureDebugPanel(want);
+  }
+
+  private registerCrashObserver(): void {
+    if (appSettingsStore.getValue('save_crash_log', 'Off') !== 'On') {
+      return;
+    }
+    try {
+      const observer: errorManager.ErrorObserver = {
+        onUnhandledException: (errMsg: string): void => {
+          appLog.error(this.context, 'AppCrash', errMsg);
+        }
+      };
+      errorManager.on('error', observer);
+    } catch (error) {
+    }
+  }
+
+  onNewWant(want: Want): void {
+    this.captureDownloadDirectory(want);
+    this.captureContinuation(want);
+    this.captureDebugPanel(want);
+    this.openPendingDownloadDirectory();
+  }
+
+  onContinue(wantParam: Record<string, Object>): AbilityConstant.OnContinueResult {
+    if (!isMultiDeviceContinuationEnabled()) {
+      return AbilityConstant.OnContinueResult.REJECT;
+    }
+    const embedded = isEmbeddedReaderActive();
+    const route = continuationRoute();
+    const session = embedded ? readerSessionStore.getSession() : null;
+    if (embedded && (session === null || session.pageIndex < 0)) {
+      return AbilityConstant.OnContinueResult.REJECT;
+    }
+    const snapshot = buildReaderContinuationSnapshot(
+      embedded ? 'embedded_reader' : 'main',
+      route,
+      session
+    );
+    if (!putContinuationSnapshot(wantParam, snapshot)) {
+      appLog.warn(this.context, 'EntryAbility', 'Continuation snapshot exceeded the platform size limit');
+      return AbilityConstant.OnContinueResult.REJECT;
+    }
+    return AbilityConstant.OnContinueResult.AGREE;
+  }
+
+  onWindowStageRestore(stage: window.WindowStage): void {
+    this.onWindowStageCreate(stage);
+  }
+
+  onWindowStageCreate(stage: window.WindowStage): void {
+    this.windowStage = stage;
+    applyMissionContinuationSetting(this.context);
+    AppStorage.setOrCreate('abilityContext', this.context);
+    AppStorage.setOrCreate<number>(STATUS_BAR_HEIGHT_KEY, 0);
+    AppStorage.setOrCreate<number>(TOP_AVOID_HEIGHT_KEY, 0);
+    AppStorage.setOrCreate<number>(BOTTOM_AVOID_HEIGHT_KEY, 0);
+    AppStorage.setOrCreate<window.Window | undefined>(MAIN_WINDOW_KEY, undefined);
+    AppStorage.setOrCreate<number>(LANGUAGE_REVISION_KEY, 0);
+    AppStorage.setOrCreate<number>(THEME_REVISION_KEY, 0);
+    AppStorage.setOrCreate<number>(COMMENT_BLACKLIST_REVISION_KEY, 0);
+    AppStorage.setOrCreate<string>(WINDOW_PRIVACY_STATUS_KEY, '');
+    AppStorage.setOrCreate<boolean>(IDENTITY_AUTH_LOCKED_KEY, false);
+    AppStorage.setOrCreate<boolean>(EMBEDDED_READER_ACTIVE_KEY, false);
+    AppStorage.setOrCreate<string>(EH_CONTINUATION_ROUTE_KEY, '');
+    AppStorage.setOrCreate<number>(APP_FOREGROUND_REVISION_KEY, 0);
+    AppStorage.setOrCreate<number>(DAILY_CHECK_IN_FOREGROUND_REVISION_KEY, 0);
+    AppStorage.setOrCreate<number>(FLOATING_ACTION_SIDE_REVISION_KEY, 0);
+    this.updateSystemColorMode(this.context.config.colorMode);
+    let mainWindow: window.Window | undefined = undefined;
+    const windowReady = stage.getMainWindow().then((win) => {
+      mainWindow = win;
+      rememberMainWindow(win);
+      win.on('windowSizeChange', (size: window.Size) => {
+        rememberMainWindowWidthPx(size.width);
+        this.updateBottomAvoidArea(win);
+      });
+      this.updateWindowAvoidAreas(win);
+      return prepareAppChromeBeforeContent(win).then(() => {
+        this.updateWindowAvoidAreas(win);
+        win.on('avoidAreaChange', (data: window.AvoidAreaOptions) => {
+          this.updateChangedAvoidArea(win, data);
+        });
+        this.applyPersistedSecureScreen();
+      });
+    }).catch(() => {});
+    const settingsReady = Promise.all([
+      appSettingsStore.ensureLoaded(this.context),
+      ehCommentBlacklistStore.ensureLoaded(this.context)
+    ]).then(() => {
+      applyMissionContinuationSetting(this.context);
+      configureEhWebDns();
+      this.setIdentityAuthLocked(this.identityAuthEnabledInMemory());
+      registerEhNetworkChangeListener(this.context);
+      this.initializeNetworkRuntime();
+    }).catch(() => {});
+    Promise.all([windowReady, settingsReady]).then(() => {
+      const readyWindow = mainWindow;
+      // 设置已就绪、页面还没挂载：先把系统颜色模式对到应用主题上，
+      // 首帧和启动窗口才会用深色资源，否则闪一下白再变黑。
+      applyAppColorMode(this.context);
+      if (readyWindow === undefined) {
+        this.loadIndexContent(stage);
+        return;
+      }
+      // Settings and window creation run in parallel. Apply the persisted accent
+      // once more before mounting ArkUI so the startup transition uses it.
+      prepareAppChromeBeforeContent(readyWindow).then(() => {
+        this.loadIndexContent(stage);
+      }).catch(() => {
+        this.loadIndexContent(stage);
+      });
+    }).catch(() => {
+      this.loadIndexContent(stage);
+    });
+  }
+
+  onConfigurationUpdate(newConfig: Configuration): void {
+    notifyLanguageChanged();
+    this.updateSystemColorMode(newConfig.colorMode);
+  }
+
+  onWindowStageDestroy(): void {
+    unregisterEhNetworkChangeListener();
+    this.windowStage = undefined;
+  }
+
+  private updateSystemColorMode(colorMode: ConfigurationConstant.ColorMode | undefined): void {
+    const normalized = colorMode === ConfigurationConstant.ColorMode.COLOR_MODE_DARK ? EH_SYSTEM_COLOR_MODE_DARK : 0;
+    const previous = AppStorage.get<number>(EH_SYSTEM_COLOR_MODE_KEY);
+    AppStorage.setOrCreate<number>(EH_SYSTEM_COLOR_MODE_KEY, normalized);
+    if (previous !== undefined && previous !== normalized) {
+      notifyThemeChanged();
+      applyAppChromeImmersiveMode();
+    }
+  }
+
+  private loadIndexContent(stage: window.WindowStage): void {
+    stage.loadContent('pages/Index', (error) => {
+      if (error.code) {
+        appLog.error(this.context, 'MainPageLoad',
+          `code=${error.code}, message=${error.message}`);
+        appLog.error(this.context, 'EntryAbility', 'Failed to load main page: ' + error.message);
+        return;
+      }
+      this.mainContentLoaded = true;
+      // 页面挂载后再读一次避让区：首帧 avoidArea 常常还是 0，底栏会贴到屏幕最底缘，
+      // 要等用户点几下、系统才推 avoidAreaChange。这里补两次，首屏就落到正确位置。
+      this.refreshAvoidAreasAfterContent();
+      applyAppColorMode(this.context);
+      resetCellularNetworkWarningConfirmation();
+      this.checkAndPromptBiometricLock();
+      this.showStartupCellularNetworkWarning();
+      this.showStartupDirectProbeToast();
+      this.pruneCacheOnStartup();
+      this.openPendingDownloadDirectory();
+    });
+  }
+
+  private refreshAvoidAreasAfterContent(): void {
+    const win = AppStorage.get<window.Window>(MAIN_WINDOW_KEY);
+    if (win === undefined) {
+      return;
+    }
+    this.updateWindowAvoidAreas(win);
+    setTimeout(() => {
+      this.updateWindowAvoidAreas(win);
+    }, 260);
+  }
+
+  private initializeNetworkRuntime(): void {
+    if (!isEhDirectConnectionProbeEnabled()) {
+      ensureEhHostRules().then(() => {
+        startEhFrontingBenchmark(this.context);
+      }).catch((error: Error) => {
+        appLog.warn(this.context, 'EntryAbility', 'Network initialization failed: ' + error.message);
+      });
+      return;
+    }
+    startEhDirectConnectionProbe(this.context).then((directAvailable: boolean) => {
+      this.startupDirectProbeToast = directAvailable
+        ? 'Direct connection available, domain fronting disabled'
+        : 'Direct connection unavailable, domain fronting enabled';
+      if (!directAvailable) {
+        startEhFrontingBenchmark(this.context);
+      }
+      this.showStartupDirectProbeToast();
+    }).catch((error: Error) => {
+      this.startupDirectProbeToast = 'Direct connection unavailable, domain fronting enabled';
+      startEhFrontingBenchmark(this.context);
+      this.showStartupDirectProbeToast();
+      appLog.warn(this.context, 'EntryAbility', 'Direct connection probe failed: ' + error.message);
+    });
+  }
+
+  private captureDebugPanel(want: Want): void {
+    if (want.parameters === undefined) {
+      return;
+    }
+    const value = want.parameters['debug_panel'];
+    if (typeof value === 'string' && value.length > 0) {
+      AppStorage.setOrCreate(DEBUG_SETTINGS_PANEL_KEY, value);
+    }
+  }
+
+  private captureDownloadDirectory(want: Want): void {
+    if (want.parameters === undefined) {
+      return;
+    }
+    const value = want.parameters[DOWNLOAD_NOTIFICATION_OPEN_DIRECTORY_KEY];
+    if (typeof value === 'string' && value.length > 0) {
+      this.pendingDownloadDirectory = value;
+    }
+  }
+
+  private openPendingDownloadDirectory(): void {
+    if (this.pendingDownloadDirectory.length === 0) {
+      return;
+    }
+    const directory = this.pendingDownloadDirectory;
+    this.pendingDownloadDirectory = '';
+    let directoryUri = directory;
+    try {
+      directoryUri = new fileUri.FileUri(directory).toString();
+    } catch (error) {
+    }
+    this.context.openLink('filemanager://openDirectory', {
+      parameters: {
+        fileUri: directoryUri
+      }
+    }).catch((error: Error) => {
+      appLog.warn(this.context, 'EntryAbility', 'Open download directory failed: ' + error.message);
+    });
+  }
+
+  private pruneCacheOnStartup(): void {
+    setTimeout(async () => {
+      try {
+        const result = await readerImageCache.pruneAsync(this.context);
+        if (result.files > 0) {
+          appLog.info(this.context, 'EntryAbility', 'Startup cache prune removed files=' +
+            result.files.toString() + ', bytes=' + result.bytes.toString());
+        }
+      } catch (error) {
+        appLog.warn(this.context, 'EntryAbility', 'Startup cache prune failed: ' + String(error));
+      }
+    }, STARTUP_CACHE_PRUNE_DELAY_MS);
+  }
+
+  private showStartupCellularNetworkWarning(): void {
+    if (!shouldWarnForCellularNetwork() || this.windowStage === undefined) {
+      return;
+    }
+    try {
+      this.windowStage.getMainWindow().then((win) => {
+        try {
+          win.getUIContext().getPromptAction().showToast({ message: uiText('Connected to cellular networks') });
+        } catch (error) {
+        }
+      }).catch(() => {});
+    } catch (error) {
+    }
+  }
+
+  private showStartupDirectProbeToast(): void {
+    if (!this.mainContentLoaded || this.startupDirectProbeToast.length === 0 || this.windowStage === undefined) {
+      return;
+    }
+    const message = this.startupDirectProbeToast;
+    this.startupDirectProbeToast = '';
+    try {
+      this.windowStage.getMainWindow().then((win) => {
+        try {
+          win.getUIContext().getPromptAction().showToast({ message: uiText(message) });
+        } catch (error) {
+        }
+      }).catch(() => {});
+    } catch (error) {
+    }
+  }
+
+  private updateWindowAvoidAreas(win: window.Window): void {
+    this.updateSystemAvoidArea(win);
+    this.updateBottomAvoidArea(win);
+  }
+
+  private updateChangedAvoidArea(win: window.Window, data: window.AvoidAreaOptions): void {
+    if (data.type === window.AvoidAreaType.TYPE_SYSTEM) {
+      this.setTopAvoidArea(win, data.area);
+    }
+    if (data.type === window.AvoidAreaType.TYPE_SYSTEM ||
+        data.type === window.AvoidAreaType.TYPE_NAVIGATION_INDICATOR ||
+        data.type === window.AvoidAreaType.TYPE_CUTOUT) {
+      this.updateBottomAvoidArea(win);
+    }
+  }
+
+  private updateSystemAvoidArea(win: window.Window): void {
+    try {
+      const area = win.getWindowAvoidArea(window.AvoidAreaType.TYPE_SYSTEM);
+      this.setTopAvoidArea(win, area);
+    } catch (error) {
+      AppStorage.set<number>(STATUS_BAR_HEIGHT_KEY, 0);
+      AppStorage.set<number>(TOP_AVOID_HEIGHT_KEY, 0);
+    }
+  }
+
+  // Bottom avoid = max(TYPE_SYSTEM.bottom, TYPE_NAVIGATION_INDICATOR.bottom, TYPE_CUTOUT.bottom),
+  // kept as a session sticky-max so it survives the reader hiding the system bars (which reports 0).
+  // TYPE_CUTOUT covers the rounded screen corner (R角) / punch-hole cutout so bottom-anchored
+  // content (drawer footer, bottom bars) is never clipped by the device corner radius.
+  private updateBottomAvoidArea(win: window.Window): void {
+    let bottomPx = 0;
+    try {
+      bottomPx = Math.max(bottomPx,
+        win.getWindowAvoidArea(window.AvoidAreaType.TYPE_SYSTEM).bottomRect.height);
+    } catch (error) {}
+    try {
+      bottomPx = Math.max(bottomPx,
+        win.getWindowAvoidArea(window.AvoidAreaType.TYPE_NAVIGATION_INDICATOR).bottomRect.height);
+    } catch (error) {}
+    try {
+      bottomPx = Math.max(bottomPx,
+        win.getWindowAvoidArea(window.AvoidAreaType.TYPE_CUTOUT).bottomRect.height);
+    } catch (error) {}
+    if (bottomPx > this.maxBottomAvoidPx) {
+      this.maxBottomAvoidPx = bottomPx;
+    }
+    try {
+      AppStorage.set<number>(BOTTOM_AVOID_HEIGHT_KEY, win.getUIContext().px2vp(this.maxBottomAvoidPx));
+    } catch (error) {
+      AppStorage.set<number>(BOTTOM_AVOID_HEIGHT_KEY, 0);
+    }
+  }
+
+  private setTopAvoidArea(win: window.Window, area: window.AvoidArea): void {
+    // A returning standalone reader briefly reports a zero system avoid area while
+    // its fullscreen window is being removed. Keep the last real value so the main
+    // toolbar never jumps under the status bar during that transition.
+    if (area.topRect.height > 0) {
+      this.lastTopAvoidPx = area.topRect.height;
+    }
+    AppStorage.set<number>(STATUS_BAR_HEIGHT_KEY, this.lastTopAvoidPx);
+    try {
+      AppStorage.set<number>(TOP_AVOID_HEIGHT_KEY, win.getUIContext().px2vp(this.lastTopAvoidPx));
+    } catch (error) {
+      AppStorage.set<number>(TOP_AVOID_HEIGHT_KEY, 0);
+    }
+  }
+
+  // 侧滑返回手势在单页面应用里不一定走到页面级 onBackPress（实测页面里打点完全没记录），
+  // 会先落到 UIAbility。这里转发给页面注册的返回处理器，否则「弹层开着侧滑一下」
+  // 会被系统当成根页面返回，直接把应用退回桌面。
+  onBackPressed(): boolean {
+    return runActiveBackHandler();
+  }
+
+  onForeground(): void {
+    this.notifyDailyCheckInForeground();
+    remoteStorageSyncService.initialize(this.context);
+    if (this.appWasBackground) {
+      this.appWasBackground = false;
+      refreshEhConnectionsAfterForeground();
+      resumeBackgroundImageRequests();
+      // ReaderAbility uses a separate window. Reassert the already-created
+      // main window's chrome first. Recreate the route only after the reader
+      // window and the main window's avoid areas have finished switching;
+      // rebuilding in the same foreground frame can retain an invalid API 26
+      // WaterFlow render surface.
+      applyAppChromeImmersiveMode();
+      this.refreshMainWindowAvoidAreasAfterReaderExit();
+      setTimeout(() => {
+        if (!this.appWasBackground) {
+          this.notifyAppForeground();
+        }
+      }, 420);
+    }
+    ehDownloadManager.onAppForeground(this.context);
+    this.applyPersistedSecureScreen();
+    if (this.authPending) {
+      return;
+    }
+    if (Date.now() < this.identityAuthGraceUntilMs) {
+      return;
+    }
+    if (this.identityAuthEnabledInMemory()) {
+      this.setIdentityAuthLocked(true);
+    }
+    this.checkAndPromptBiometricLock();
+  }
+
+  private captureContinuation(want: Want): void {
+    const snapshot = readContinuationSnapshot(want);
+    if (snapshot === null) {
+      return;
+    }
+    if (snapshot.kind === 'standalone_reader') {
+      return;
+    }
+    setPendingContinuationSnapshot(snapshot);
+    if (snapshot.route.length > 0) {
+      AppStorage.setOrCreate<string>(EH_CONTINUATION_ROUTE_KEY, snapshot.route);
+    }
+  }
+
+  private notifyAppForeground(): void {
+    const current = AppStorage.get<number>(APP_FOREGROUND_REVISION_KEY) ?? 0;
+    AppStorage.setOrCreate<number>(APP_FOREGROUND_REVISION_KEY, current + 1);
+  }
+
+  private refreshMainWindowAvoidAreasAfterReaderExit(): void {
+    const refresh = (): void => {
+      if (this.windowStage === undefined) {
+        return;
+      }
+      this.windowStage.getMainWindow().then((win) => {
+        this.updateWindowAvoidAreas(win);
+      }).catch(() => {});
+    };
+    refresh();
+    setTimeout(refresh, 120);
+    setTimeout(refresh, 360);
+  }
+
+  private notifyDailyCheckInForeground(): void {
+    const current = AppStorage.get<number>(DAILY_CHECK_IN_FOREGROUND_REVISION_KEY) ?? 0;
+    AppStorage.setOrCreate<number>(DAILY_CHECK_IN_FOREGROUND_REVISION_KEY, current + 1);
+  }
+
+  onBackground(): void {
+    this.appWasBackground = true;
+    remoteStorageSyncService.pause();
+    pauseBackgroundImageRequests();
+    ehDownloadManager.onAppBackground(this.context);
+    if (this.authPending) {
+      return;
+    }
+    if (this.identityAuthEnabledInMemory()) {
+      this.setIdentityAuthLocked(true);
+    }
+    this.applyPersistedSecureScreen();
+  }
+
+  private applyPersistedSecureScreen(): void {
+    preferences.getPreferences(this.context, { name: SETTINGS_PREF_NAME }).then((prefs) => {
+      return prefs.get(SETTINGS_VALUES_KEY, '').catch(() => '');
+    }).then((raw) => {
+      let enabled = false;
+      if (typeof raw === 'string' && raw.length > 0) {
+        try {
+          const entries = JSON.parse(raw) as SettingEntry[];
+          if (Array.isArray(entries)) {
+            for (let i = 0; i < entries.length; i++) {
+              if (entries[i].key === 'enable_secure') {
+                enabled = entries[i].value === 'On';
+                break;
+              }
+            }
+          }
+        } catch (error) {
+          enabled = false;
+        }
+      }
+      applyWindowPrivacyMode(enabled, undefined, this.context);
+    }).catch(() => {
+      applyWindowPrivacyMode(false, undefined, this.context);
+    });
+  }
+
+  private checkAndPromptBiometricLock(): void {
+    preferences.getPreferences(this.context, { name: SETTINGS_PREF_NAME }).then((prefs) => {
+      return prefs.get(SETTINGS_VALUES_KEY, '').catch(() => '');
+    }).then((raw) => {
+      if (typeof raw !== 'string' || raw.length === 0) {
+        return;
+      }
+      let mode = IDENTITY_AUTH_OFF;
+      try {
+        const entries = JSON.parse(raw) as SettingEntry[];
+        if (Array.isArray(entries)) {
+          for (let i = 0; i < entries.length; i++) {
+            if (entries[i].key === 'pattern_protection') {
+              mode = normalizeIdentityAuthenticationOption(entries[i].value);
+              break;
+            }
+          }
+        }
+      } catch (error) {
+        return;
+      }
+      if (mode === IDENTITY_AUTH_OFF) {
+        this.setIdentityAuthLocked(false);
+        return;
+      }
+      this.setIdentityAuthLocked(true);
+      this.promptBiometricAuth(mode);
+    }).catch(() => {});
+  }
+
+  private promptBiometricAuth(mode: string): void {
+    if (this.authPending) {
+      return;
+    }
+    this.authPending = true;
+    this.startNextIdentityAuth(this.identityAuthTypeSequenceForMode(mode), 0);
+  }
+
+  private startNextIdentityAuth(types: userAuth.UserAuthType[], index: number): void {
+    if (index >= types.length) {
+      this.authPending = false;
+      this.setIdentityAuthLocked(true);
+      this.minimizeApp();
+      return;
+    }
+    const authType = types[index];
+    if (!this.identityAuthTypeAvailable(authType)) {
+      this.startNextIdentityAuth(types, index + 1);
+      return;
+    }
+    try {
+      const challenge = generateChallenge();
+      const authParam: userAuth.AuthParam = {
+        challenge: challenge,
+        authType: [authType],
+        authTrustLevel: this.identityAuthTrustLevel(authType),
+        skipLockedBiometricAuth: true
+      };
+      const widgetParam: userAuth.WidgetParam = {
+        title: this.identityAuthTitle(authType),
+        navigationButtonText: uiText('Cancel')
+      };
+      const authInstance = userAuth.getUserAuthInstance(authParam, widgetParam);
+      authInstance.on('result', {
+        onResult: (result: userAuth.UserAuthResult) => {
+          this.authPending = false;
+          if (result.result === userAuth.UserAuthResultCode.SUCCESS) {
+            this.identityAuthGraceUntilMs = Date.now() + 5000;
+            this.setIdentityAuthLocked(false);
+          } else if (this.shouldTryNextIdentityAuthType(result.result)) {
+            this.authPending = true;
+            this.startNextIdentityAuth(types, index + 1);
+          } else {
+            this.setIdentityAuthLocked(true);
+            this.minimizeApp();
+          }
+        }
+      });
+      authInstance.start();
+    } catch (error) {
+      if (this.shouldTryNextIdentityAuthType(this.errorCode(error))) {
+        this.startNextIdentityAuth(types, index + 1);
+        return;
+      }
+      this.authPending = false;
+      this.setIdentityAuthLocked(true);
+      this.minimizeApp();
+    }
+  }
+
+  private identityAuthEnabledInMemory(): boolean {
+    return normalizeIdentityAuthenticationOption(appSettingsStore.getValue('pattern_protection', 'Off')) !== IDENTITY_AUTH_OFF;
+  }
+
+  private setIdentityAuthLocked(locked: boolean): void {
+    AppStorage.setOrCreate<boolean>(IDENTITY_AUTH_LOCKED_KEY, locked);
+  }
+
+  private identityAuthTypeSequenceForMode(mode: string): userAuth.UserAuthType[] {
+    const normalizedMode = normalizeIdentityAuthenticationOption(mode);
+    if (normalizedMode === IDENTITY_AUTH_FACE_FIRST) {
+      return [userAuth.UserAuthType.FACE, userAuth.UserAuthType.FINGERPRINT, userAuth.UserAuthType.PIN];
+    }
+    if (normalizedMode === IDENTITY_AUTH_PASSWORD_FIRST) {
+      return [userAuth.UserAuthType.PIN, userAuth.UserAuthType.FINGERPRINT, userAuth.UserAuthType.FACE];
+    }
+    if (normalizedMode === IDENTITY_AUTH_FINGERPRINT_FIRST) {
+      return [userAuth.UserAuthType.FINGERPRINT, userAuth.UserAuthType.FACE, userAuth.UserAuthType.PIN];
+    }
+    return [userAuth.UserAuthType.FINGERPRINT, userAuth.UserAuthType.FACE, userAuth.UserAuthType.PIN];
+  }
+
+  private identityAuthTypeAvailable(authType: userAuth.UserAuthType): boolean {
+    try {
+      userAuth.getAvailableStatus(authType, this.identityAuthTrustLevel(authType));
+      return true;
+    } catch (error) {
+      return false;
+    }
+  }
+
+  private identityAuthTrustLevel(authType: userAuth.UserAuthType): userAuth.AuthTrustLevel {
+    return authType === userAuth.UserAuthType.PIN ? userAuth.AuthTrustLevel.ATL3 : userAuth.AuthTrustLevel.ATL1;
+  }
+
+  private identityAuthTitle(authType: userAuth.UserAuthType): string {
+    if (authType === userAuth.UserAuthType.PIN) {
+      return uiText('EhViewer') + ' ' + uiText('Password first');
+    }
+    if (authType === userAuth.UserAuthType.FACE) {
+      return uiText('EhViewer') + ' ' + uiText('Face first');
+    }
+    return uiText('EhViewer') + ' ' + uiText('Fingerprint first');
+  }
+
+  private shouldTryNextIdentityAuthType(resultCode: number): boolean {
+    return resultCode === userAuth.UserAuthResultCode.TYPE_NOT_SUPPORT ||
+      resultCode === userAuth.UserAuthResultCode.TRUST_LEVEL_NOT_SUPPORT ||
+      resultCode === userAuth.UserAuthResultCode.NOT_ENROLLED ||
+      resultCode === userAuth.UserAuthResultCode.LOCKED ||
+      resultCode === userAuth.UserAuthResultCode.BUSY;
+  }
+
+  private errorCode(error: Error | Object | string): number {
+    if (typeof error !== 'object' || error === null) {
+      return 0;
+    }
+    const candidate = error as Record<string, Object>;
+    if (typeof candidate.code === 'number') {
+      return candidate.code;
+    }
+    return 0;
+  }
+
+  private minimizeApp(): void {
+    if (this.windowStage === undefined) {
+      return;
+    }
+    try {
+      this.windowStage.getMainWindow().then((win) => {
+        try {
+          win.minimize().catch(() => {});
+        } catch (error) {
+        }
+      }).catch(() => {});
+    } catch (error) {
+    }
+  }
+}
+
+function generateChallenge(): Uint8Array {
+  const bytes = new Uint8Array(32);
+  for (let i = 0; i < bytes.length; i++) {
+    bytes[i] = Math.floor(Math.random() * 256);
+  }
+  return bytes;
+}

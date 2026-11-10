@@ -1,0 +1,116 @@
+import { GalleryComment } from '../../model/GalleryModels';
+import { uiText } from '../../shared/AppRuntime';
+import { DetailSectionRetry } from './DetailSectionRetry';
+import { themeAccentTextColor, themePrimaryText, themeSecondaryText, themeSurface } from '../../shared/AppPalette';
+import { GalleryCommentRow } from './CommentComponents';
+import { uiCapsuleButtonBackground, uiRadius } from '../../shared/AppSurfaceStyle';
+import {
+  COMMENT_BLACKLIST_REVISION_KEY,
+  ehCommentBlacklistStore
+} from '../../services/EhCommentBlacklistStore';
+
+@Component
+export struct DetailComments {
+  @StorageProp(COMMENT_BLACKLIST_REVISION_KEY) @Watch('refreshVisibleComments') blacklistRevision: number = 0;
+  @Prop @Watch('refreshVisibleComments') comments: GalleryComment[] = [];
+  @Prop isDetailLoaded: boolean = false;
+  @Prop sectionFailed: boolean = false;
+  @Prop sectionMessage: string = '';
+  @Prop translateComments: boolean = false;
+  onRetrySection: () => void = () => {};
+  onComments: () => void = () => {};
+  onVoteComment: (comment: GalleryComment, vote: number) => void = (_comment: GalleryComment, _vote: number) => {};
+  onOpenGalleryLink: (url: string) => void = (_url: string) => {};
+  @State visibleCommentItems: GalleryComment[] = [];
+
+  aboutToAppear(): void {
+    this.refreshVisibleComments();
+  }
+
+  private refreshVisibleComments(): void {
+    this.visibleCommentItems = ehCommentBlacklistStore.filterComments(this.comments);
+  }
+
+  build() {
+    Column() {
+      Row() {
+        Text(uiText('Comments'))
+          .fontSize(15)
+          .fontWeight(FontWeight.Medium)
+          .fontColor(themePrimaryText())
+          .layoutWeight(1)
+        if (!this.isDetailLoaded) {
+          Text(uiText('Loading...'))
+            .fontSize(13)
+            .fontColor(themeSecondaryText())
+        } else if (this.visibleCommentItems.length > 0) {
+          Text(uiText('See all') + ' (' + this.visibleCommentItems.length.toString() + ')')
+            .fontSize(13)
+            .fontColor(themeAccentTextColor())
+            .onClick(() => {
+              this.onComments();
+            })
+        } else {
+          Text('0 ' + uiText('comments'))
+            .fontSize(13)
+            .fontColor(themeSecondaryText())
+        }
+        if (this.isDetailLoaded) {
+          Button(uiText('Write comment'), { type: ButtonType.Capsule, stateEffect: true })
+            .height(34)
+            .fontSize(13)
+            .fontColor(themeAccentTextColor())
+            .backgroundColor(uiCapsuleButtonBackground())
+            .borderRadius(uiRadius(17))
+            .margin({ left: 10 })
+            .onClick(() => this.onComments())
+        }
+      }
+      .width('100%')
+      .margin({ bottom: 10 })
+      .onClick(() => {
+        if (this.isDetailLoaded) {
+          this.onComments();
+        }
+      })
+
+      if (this.sectionFailed) {
+        DetailSectionRetry({
+          sectionTitle: 'Comments',
+          message: this.sectionMessage,
+          onRetry: () => {
+            this.onRetrySection();
+          }
+        })
+      } else if (!this.isDetailLoaded) {
+        Text(uiText('Loading comments...'))
+          .fontSize(13)
+          .fontColor(themeSecondaryText())
+      } else if (this.visibleCommentItems.length === 0) {
+        Text(uiText('No comments'))
+          .fontSize(13)
+          .fontColor(themeSecondaryText())
+      } else {
+        ForEach(this.visibleCommentItems.slice(0, 2), (comment: GalleryComment, index: number) => {
+          GalleryCommentRow({
+            comment: this.visibleCommentItems[index],
+            maxLines: 4,
+            compact: true,
+            openGalleryLinksInApp: true,
+            selectableText: false,
+            rowClickable: true,
+            translateComment: this.translateComments,
+            onVoteComment: this.onVoteComment,
+            onOpenGalleryLink: this.onOpenGalleryLink,
+            onTapRow: this.onComments
+          })
+            .margin({ bottom: 6 })
+        }, (comment: GalleryComment, index: number) => comment.id + ':' + index.toString())
+      }
+    }
+    .alignItems(HorizontalAlign.Start)
+    .width('100%')
+    .padding(16)
+    .backgroundColor(themeSurface())
+  }
+}

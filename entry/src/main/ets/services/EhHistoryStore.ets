@@ -1,0 +1,863 @@
+import { common } from '@kit.AbilityKit';
+import { preferences } from '@kit.ArkData';
+import { fileIo as fs } from '@kit.CoreFileKit';
+import { GalleryCategory, GalleryInfo, GalleryTagGroup } from '../model/GalleryModels';
+import {
+  ReaderPageTranslation,
+  cloneReaderPageTranslation,
+  cloneReaderPageTranslations
+} from '../model/ReaderTranslationModels';
+import { EhUrl } from './EhUrl';
+import { syncTombstoneStore } from './SyncTombstoneStore';
+import {
+  cloneGalleryTagGroups,
+  cloneStringArray,
+  cloneStringArrayRequired,
+  galleryDetailLanguage,
+  galleryDetailTags, storedToGalleryTagGroups, StoredGalleryTagGroup} from '../shared/GalleryTagSupport';
+
+const SYNC_SECTION_HISTORY: string = 'history';
+const SYNC_SECTION_READING_PROGRESS: string = 'readingProgress';
+
+const PREFERENCES_NAME: string = 'ehviewer_history';
+const VALUES_KEY: string = 'items';
+const VALUES_BACKUP_KEY: string = 'items_backup';
+const READ_POSITIONS_KEY: string = 'read_positions';
+const READ_POSITIONS_BACKUP_KEY: string = 'read_positions_backup';
+const FILE_NAME: string = 'ehviewer_history.json';
+const FILE_BACKUP_NAME: string = 'ehviewer_history.backup.json';
+const HISTORY_DEFAULT_MAX_SIZE: number = 100;
+const HISTORY_ABSOLUTE_MAX_SIZE: number = 20000;
+const HISTORY_SAVE_DEBOUNCE_MS: number = 300;
+
+interface StoredGalleryInfo {
+  galleryUrl?: string;
+  gid?: number;
+  token?: string;
+  title?: string;
+  titleJpn?: string;
+  thumb?: string;
+  category?: number;
+  posted?: string;
+  uploader?: string;
+  rating?: number;
+  rated?: boolean;
+  simpleLanguage?: string;
+  simpleTags?: string[];
+  pages?: number;
+  thumbWidth?: number;
+  thumbHeight?: number;
+  favoriteSlot?: number;
+  favoriteName?: string;
+  tagList?: string[];
+  detailTags?: StoredGalleryTagGroup[];
+  detailLanguage?: string;
+  historyTime?: number;
+}
+
+
+interface StoredReadPosition {
+  gid?: number;
+  pageIndex?: number;
+  progressUpdatedAt?: number;
+  updatedAt?: number;
+  readerTranslations?: ReaderPageTranslation[];
+}
+
+interface ReadPosition {
+  gid: number;
+  pageIndex: number;
+  progressUpdatedAt: number;
+  updatedAt: number;
+  readerTranslations: ReaderPageTranslation[];
+}
+
+export interface ReadingProgressBackupInfo {
+  gid: number;
+  pageIndex: number;
+  progressUpdatedAt: number;
+  updatedAt: number;
+}
+
+interface HistoryBackupFile {
+  version?: number;
+  items?: StoredGalleryInfo[];
+  readPositions?: StoredReadPosition[];
+  updatedAt?: number;
+}
+
+interface HistoryFileState {
+  items: GalleryInfo[];
+  readPositions: ReadPosition[];
+}
+
+interface StoredGalleryUrlParts {
+  gid: number;
+  token: string;
+}
+
+export class EhHistoryStore {
+  private items: GalleryInfo[] = [];
+  private readPositions: ReadPosition[] = [];
+  private context: common.UIAbilityContext | undefined = undefined;
+  private saveChain: Promise<void> = Promise.resolve();
+  private saveTimer: number = -1;
+  private loaded: boolean = false;
+  private loadPromise: Promise<void> | null = null;
+
+  contains(gid: number): boolean {
+    for (let i = 0; i < this.items.length; i++) {
+      if (this.items[i].gid === gid) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  getItems(): GalleryInfo[] {
+    const cloned = cloneGalleryInfos(this.items);
+    cloned.sort((left: GalleryInfo, right: GalleryInfo): number => {
+      const leftTime = left.historyTime === undefined ? 0 : left.historyTime;
+      const rightTime = right.historyTime === undefined ? 0 : right.historyTime;
+      const result = rightTime - leftTime;
+      // 时间相同时按 gid 兜底，保证两台设备排序一致。
+      return result !== 0 ? result : right.gid - left.gid;
+    });
+    return cloned;
+  }
+
+  addGallery(gallery: GalleryInfo, maxSize: number = HISTORY_DEFAULT_MAX_SIZE,
+    recordClear: boolean = true): void {
+    if (gallery.gid <= 0 || gallery.token.length === 0) {
+      return;
+    }
+    if (recordClear) {
+      syncTombstoneStore.recordClear(this.context, SYNC_SECTION_HISTORY, gallery.gid.toString());
+    }
+
+    const entry = cloneGalleryInfo(gallery);
+    entry.historyTime = gallery.historyTime !== undefined && gallery.historyTime > 0 ?
+      gallery.historyTime : Date.now();
+    const next: GalleryInfo[] = [entry];
+    const limit = Math.min(HISTORY_ABSOLUTE_MAX_SIZE, Math.max(1, maxSize));
+    for (let i = 0; i < this.items.length; i++) {
+      if (this.items[i].gid !== gallery.gid) {
+        next.push(cloneGalleryInfo(this.items[i]));
+      }
+      if (next.length >= limit) {
+        break;
+      }
+    }
+    this.items = next;
+    this.queueSave();
+  }
+
+  // Old history files have no timestamps. Assign falling times so the stored newest-first order is
+  // preserved until the entry is revisited.
+  private ensureHistoryTimes(): void {
+    const now = Date.now();
+    for (let i = 0; i < this.items.length; i++) {
+      const item = this.items[i];
+      if (item.historyTime === undefined || item.historyTime <= 0) {
+        item.historyTime = now - i;
+      }
+    }
+  }
+
+  // Merge history from another device. Entries are matched by gid; the copy with the newer
+  // timestamp wins so merges are deterministic and never re-stamp imported entries. Untimed
+  // legacy entries are placed below every timed entry instead of getting "now".
+  importHistoryBackupItems(items: GalleryInfo[], maxSize: number = HISTORY_DEFAULT_MAX_SIZE): number {
+    if (!Array.isArray(items)) {
+      return 0;
+    }
+    let imported = 0;
+    let changed = 0;
+    let oldestTime = 0;
+    for (let i = 0; i < this.items.length; i++) {
+      const time = this.historyTimeOf(this.items[i]);
+      if (time > 0 && (oldestTime === 0 || time < oldestTime)) {
+        oldestTime = time;
+      }
+    }
+    for (let i = items.length - 1; i >= 0; i--) {
+      const item = items[i];
+      if (item === null || item === undefined || typeof item.gid !== 'number' || item.gid <= 0 ||
+        typeof item.token !== 'string' || item.token.length === 0) {
+        continue;
+      }
+      const remoteTime = this.historyTimeOf(item);
+      const index = this.indexOf(item.gid);
+      if (index >= 0) {
+        const localTime = this.historyTimeOf(this.items[index]);
+        if (remoteTime > localTime) {
+          const entry = cloneGalleryInfo(item);
+          entry.historyTime = remoteTime;
+          this.items[index] = entry;
+          changed++;
+        }
+        continue;
+      }
+      const entry = cloneGalleryInfo(item);
+      if (remoteTime > 0) {
+        entry.historyTime = remoteTime;
+      } else {
+        oldestTime = oldestTime > 0 ? oldestTime - 1 : Date.now() - this.items.length - 1;
+        entry.historyTime = oldestTime;
+      }
+      this.items.push(entry);
+      imported++;
+    }
+    if (imported > 0 || changed > 0) {
+      this.sortByTimeDesc();
+      this.trim(maxSize);
+      this.queueSave();
+    }
+    return imported + changed;
+  }
+
+  private sortByTimeDesc(): void {
+    this.items.sort((left: GalleryInfo, right: GalleryInfo): number => {
+      const result = this.historyTimeOf(right) - this.historyTimeOf(left);
+      return result !== 0 ? result : right.gid - left.gid;
+    });
+  }
+
+  private historyTimeOf(item: GalleryInfo): number {
+    const value = item.historyTime;
+    if (value === undefined || value <= 0) {
+      return 0;
+    }
+    return value;
+  }
+
+  private indexOf(gid: number): number {
+    for (let i = 0; i < this.items.length; i++) {
+      if (this.items[i].gid === gid) {
+        return i;
+      }
+    }
+    return -1;
+  }
+
+  updateGallery(gallery: GalleryInfo): boolean {
+    if (gallery.gid <= 0 || gallery.token.length === 0) {
+      return false;
+    }
+    for (let i = 0; i < this.items.length; i++) {
+      if (this.items[i].gid === gallery.gid) {
+        const entry = cloneGalleryInfo(gallery);
+        if (entry.historyTime === undefined || entry.historyTime <= 0) {
+          entry.historyTime = this.items[i].historyTime;
+        }
+        this.items[i] = entry;
+        this.queueSave();
+        return true;
+      }
+    }
+    return false;
+  }
+
+  trim(maxSize: number = HISTORY_DEFAULT_MAX_SIZE): void {
+    const limit = Math.min(HISTORY_ABSOLUTE_MAX_SIZE, Math.max(1, maxSize));
+    if (this.items.length > limit) {
+      this.items.splice(limit);
+      this.pruneReadPositions();
+      this.queueSave();
+    }
+  }
+
+  removeGallery(gid: number): void {
+    const next: GalleryInfo[] = [];
+    for (let i = 0; i < this.items.length; i++) {
+      if (this.items[i].gid !== gid) {
+        next.push(cloneGalleryInfo(this.items[i]));
+      }
+    }
+    this.items = next;
+    this.removeReadPosition(gid);
+    syncTombstoneStore.recordDeletion(this.context, SYNC_SECTION_HISTORY, gid.toString());
+    this.queueSave();
+  }
+
+  clear(): void {
+    for (let i = 0; i < this.items.length; i++) {
+      syncTombstoneStore.recordDeletion(this.context, SYNC_SECTION_HISTORY, this.items[i].gid.toString());
+    }
+    for (let i = 0; i < this.readPositions.length; i++) {
+      syncTombstoneStore.recordDeletion(this.context, SYNC_SECTION_READING_PROGRESS,
+        this.readPositions[i].gid.toString());
+    }
+    this.items = [];
+    this.readPositions = [];
+    this.queueSave();
+  }
+
+  resetAllReadPositions(): void {
+    for (let i = 0; i < this.readPositions.length; i++) {
+      syncTombstoneStore.recordDeletion(this.context, SYNC_SECTION_READING_PROGRESS,
+        this.readPositions[i].gid.toString());
+    }
+    this.readPositions = [];
+    this.queueSave();
+  }
+
+  removeReadingProgress(gid: number): void {
+    this.removeReadPosition(gid);
+    syncTombstoneStore.recordDeletion(this.context, SYNC_SECTION_READING_PROGRESS, gid.toString());
+    this.queueSave();
+  }
+
+  getReadPage(gid: number): number {
+    for (let i = 0; i < this.readPositions.length; i++) {
+      if (this.readPositions[i].gid === gid) {
+        return this.readPositions[i].pageIndex;
+      }
+    }
+    return -1;
+  }
+
+  getReadingProgressCount(): number {
+    return this.readPositions.length;
+  }
+
+  getReadingProgressBackupItems(): ReadingProgressBackupInfo[] {
+    const result: ReadingProgressBackupInfo[] = [];
+    for (let i = 0; i < this.readPositions.length; i++) {
+      const position = this.readPositions[i];
+      const item: ReadingProgressBackupInfo = {
+        gid: position.gid,
+        pageIndex: position.pageIndex,
+        progressUpdatedAt: position.progressUpdatedAt,
+        updatedAt: position.updatedAt
+      };
+      result.push(item);
+    }
+    return result;
+  }
+
+  importReadingProgressBackupItems(items: ReadingProgressBackupInfo[]): number {
+    if (!Array.isArray(items)) {
+      return 0;
+    }
+    let changedCount = 0;
+    for (let i = 0; i < items.length; i++) {
+      const incoming = normalizeReadingProgressBackupInfo(items[i]);
+      if (incoming === null) {
+        continue;
+      }
+      const localIndex = this.findReadPositionIndex(incoming.gid);
+      let changed = false;
+      if (localIndex < 0) {
+        this.readPositions.push({
+          gid: incoming.gid,
+          pageIndex: incoming.pageIndex,
+          progressUpdatedAt: incoming.progressUpdatedAt,
+          updatedAt: incoming.updatedAt,
+          readerTranslations: []
+        });
+        changed = true;
+      } else {
+        const local = this.readPositions[localIndex];
+        if (incoming.progressUpdatedAt > local.progressUpdatedAt ||
+          (incoming.progressUpdatedAt === local.progressUpdatedAt && incoming.pageIndex > local.pageIndex)) {
+          local.pageIndex = incoming.pageIndex;
+          local.progressUpdatedAt = incoming.progressUpdatedAt;
+          changed = true;
+        }
+        local.updatedAt = Math.max(local.updatedAt, incoming.updatedAt);
+      }
+      if (changed) {
+        changedCount++;
+      }
+    }
+    if (changedCount > 0) {
+      this.queueSave();
+    }
+    return changedCount;
+  }
+
+  setReadPage(gid: number, pageIndex: number): void {
+    if (gid <= 0 || pageIndex < 0) {
+      return;
+    }
+    syncTombstoneStore.recordClear(this.context, SYNC_SECTION_READING_PROGRESS, gid.toString());
+    for (let i = 0; i < this.readPositions.length; i++) {
+      if (this.readPositions[i].gid === gid) {
+        const now = Date.now();
+        this.readPositions[i].pageIndex = pageIndex;
+        this.readPositions[i].progressUpdatedAt = now;
+        this.readPositions[i].updatedAt = now;
+        this.queueSave();
+        return;
+      }
+    }
+    const now = Date.now();
+    this.readPositions.push({
+      gid: gid,
+      pageIndex: pageIndex,
+      progressUpdatedAt: now,
+      updatedAt: now,
+      readerTranslations: []
+    });
+    this.queueSave();
+  }
+
+  getReaderTranslation(gid: number, pageIndex: number): ReaderPageTranslation | null {
+    for (let i = 0; i < this.readPositions.length; i++) {
+      if (this.readPositions[i].gid !== gid) {
+        continue;
+      }
+      for (let j = 0; j < this.readPositions[i].readerTranslations.length; j++) {
+        if (this.readPositions[i].readerTranslations[j].pageIndex === pageIndex) {
+          return cloneReaderPageTranslation(this.readPositions[i].readerTranslations[j]);
+        }
+      }
+    }
+    return null;
+  }
+
+  setReaderTranslation(gid: number, translation: ReaderPageTranslation): void {
+    if (gid <= 0 || translation.pageIndex < 0) {
+      return;
+    }
+    for (let i = 0; i < this.readPositions.length; i++) {
+      if (this.readPositions[i].gid === gid) {
+        this.replaceReaderTranslation(this.readPositions[i], translation);
+        this.readPositions[i].updatedAt = Date.now();
+        this.queueSave();
+        return;
+      }
+    }
+    this.readPositions.push({
+      gid: gid,
+      pageIndex: translation.pageIndex,
+      progressUpdatedAt: 0,
+      updatedAt: Date.now(),
+      readerTranslations: [cloneReaderPageTranslation(translation)]
+    });
+    this.queueSave();
+  }
+
+  private replaceReaderTranslation(position: ReadPosition, translation: ReaderPageTranslation): void {
+    const next: ReaderPageTranslation[] = [];
+    let replaced = false;
+    for (let i = 0; i < position.readerTranslations.length; i++) {
+      if (position.readerTranslations[i].pageIndex === translation.pageIndex) {
+        next.push(cloneReaderPageTranslation(translation));
+        replaced = true;
+      } else {
+        next.push(cloneReaderPageTranslation(position.readerTranslations[i]));
+      }
+    }
+    if (!replaced) {
+      next.push(cloneReaderPageTranslation(translation));
+    }
+    next.sort((left: ReaderPageTranslation, right: ReaderPageTranslation) => left.pageIndex - right.pageIndex);
+    position.readerTranslations = next;
+  }
+
+  private findReadPositionIndex(gid: number): number {
+    for (let i = 0; i < this.readPositions.length; i++) {
+      if (this.readPositions[i].gid === gid) {
+        return i;
+      }
+    }
+    return -1;
+  }
+
+  async load(context: common.UIAbilityContext): Promise<void> {
+    this.context = context;
+    if (this.loadPromise !== null) {
+      await this.loadPromise;
+      return;
+    }
+    this.loadPromise = this.loadNow(context);
+    try {
+      await this.loadPromise;
+    } finally {
+      this.loadPromise = null;
+    }
+  }
+
+  async ensureLoaded(context: common.UIAbilityContext): Promise<void> {
+    this.context = context;
+    if (this.loaded) {
+      return;
+    }
+    await this.load(context);
+  }
+
+  private async loadNow(context: common.UIAbilityContext): Promise<void> {
+    try {
+      const main = this.readFile(context.filesDir + '/' + FILE_NAME);
+      const backup = this.readFile(context.filesDir + '/' + FILE_BACKUP_NAME);
+      const chosen = main.items.length > 0 || main.readPositions.length > 0 ? main : backup;
+      this.items = chosen.items;
+      this.readPositions = chosen.readPositions;
+      if (this.items.length === 0 && this.readPositions.length === 0) {
+        await this.restoreFromLegacyPreferences(context);
+      }
+      // 必须放在旧版偏好恢复之后：恢复出来的条目没有时间戳，不能带着空时间落盘。
+      this.ensureHistoryTimes();
+      this.loaded = true;
+      if (this.items.length > 0 || this.readPositions.length > 0) {
+        await this.saveNow(context);
+      }
+    } catch (error) {
+      throw new Error(String(error));
+    }
+  }
+
+  async save(context: common.UIAbilityContext): Promise<void> {
+    this.context = context;
+    if (this.saveTimer >= 0) {
+      clearTimeout(this.saveTimer);
+      this.saveTimer = -1;
+    }
+    const pending = this.saveChain.then(() => this.saveNow(context));
+    this.saveChain = pending.catch(() => {});
+    await pending;
+  }
+
+  private queueSave(): void {
+    const context = this.context;
+    if (context === undefined) {
+      return;
+    }
+    if (this.saveTimer >= 0) {
+      clearTimeout(this.saveTimer);
+    }
+    this.saveTimer = setTimeout(() => {
+      this.saveTimer = -1;
+      this.saveChain = this.saveChain.then(() => this.saveNow(context)).catch(() => {});
+    }, HISTORY_SAVE_DEBOUNCE_MS) as number;
+  }
+
+  private async saveNow(context: common.UIAbilityContext): Promise<void> {
+    try {
+      await this.saveFile(context, this.serializeStoredItems(), this.serializeReadPositions());
+    } catch (error) {
+      throw new Error(String(error));
+    }
+  }
+
+  private async restoreFromLegacyPreferences(context: common.UIAbilityContext): Promise<void> {
+    try {
+      const prefs = await preferences.getPreferences(context, { name: PREFERENCES_NAME });
+      const raw = await prefs.get(VALUES_KEY, '');
+      const rawBackup = await prefs.get(VALUES_BACKUP_KEY, '');
+      const rawPositions = await prefs.get(READ_POSITIONS_KEY, '');
+      const rawPositionsBackup = await prefs.get(READ_POSITIONS_BACKUP_KEY, '');
+      this.items = this.parseStoredItems(raw, rawBackup);
+      this.readPositions = this.parseReadPositions(rawPositions, rawPositionsBackup);
+    } catch (error) {
+      this.items = [];
+      this.readPositions = [];
+    }
+  }
+
+  private readFile(path: string): HistoryFileState {
+    try {
+      const parsed = JSON.parse(fs.readTextSync(path)) as HistoryBackupFile;
+      return {
+        items: this.parseStoredItemsOnce(JSON.stringify(parsed.items === undefined ? [] : parsed.items)),
+        readPositions: this.parseReadPositionsOnce(JSON.stringify(parsed.readPositions === undefined ? [] :
+          parsed.readPositions))
+      };
+    } catch (error) {
+      return { items: [], readPositions: [] };
+    }
+  }
+
+  private async saveFile(context: common.UIAbilityContext, items: StoredGalleryInfo[],
+    readPositions: StoredReadPosition[]): Promise<void> {
+    const payload = JSON.stringify({
+      version: 1,
+      items: items,
+      readPositions: readPositions,
+      updatedAt: Date.now()
+    });
+    await writeTextFileQuietly(context.filesDir + '/' + FILE_NAME, payload);
+    await writeTextFileQuietly(context.filesDir + '/' + FILE_BACKUP_NAME, payload);
+  }
+
+  private serializeStoredItems(): StoredGalleryInfo[] {
+    const stored: StoredGalleryInfo[] = [];
+    const count = Math.min(this.items.length, HISTORY_ABSOLUTE_MAX_SIZE);
+    for (let i = 0; i < count; i++) {
+      stored.push(galleryInfoToStored(this.items[i]));
+    }
+    return stored;
+  }
+
+  private serializeReadPositions(): StoredReadPosition[] {
+    const positions: StoredReadPosition[] = [];
+    for (let i = 0; i < this.readPositions.length; i++) {
+      positions.push({
+        gid: this.readPositions[i].gid,
+        pageIndex: this.readPositions[i].pageIndex,
+        progressUpdatedAt: this.readPositions[i].progressUpdatedAt,
+        updatedAt: this.readPositions[i].updatedAt,
+        readerTranslations: cloneReaderPageTranslations(this.readPositions[i].readerTranslations)
+      });
+    }
+    return positions;
+  }
+
+  private parseStoredItems(raw: preferences.ValueType, backup: preferences.ValueType): GalleryInfo[] {
+    const fromMain = this.parseStoredItemsOnce(raw);
+    if (fromMain.length > 0 || typeof backup !== 'string' || backup.length === 0) {
+      return fromMain;
+    }
+    return this.parseStoredItemsOnce(backup);
+  }
+
+  private parseStoredItemsOnce(raw: preferences.ValueType): GalleryInfo[] {
+    const items: GalleryInfo[] = [];
+    if (typeof raw !== 'string' || raw.length === 0) {
+      return items;
+    }
+    try {
+      const parsed = JSON.parse(raw) as StoredGalleryInfo[];
+      if (!Array.isArray(parsed)) {
+        return items;
+      }
+      for (let i = 0; i < parsed.length; i++) {
+        const item = storedToGalleryInfo(parsed[i]);
+        if (item.gid > 0 && item.token.length > 0) {
+          items.push(item);
+        }
+      }
+    } catch (error) {
+    }
+    return items;
+  }
+
+  private parseReadPositions(raw: preferences.ValueType, backup: preferences.ValueType): ReadPosition[] {
+    const fromMain = this.parseReadPositionsOnce(raw);
+    if (fromMain.length > 0 || typeof backup !== 'string' || backup.length === 0) {
+      return fromMain;
+    }
+    return this.parseReadPositionsOnce(backup);
+  }
+
+  private parseReadPositionsOnce(raw: preferences.ValueType): ReadPosition[] {
+    const positions: ReadPosition[] = [];
+    if (typeof raw !== 'string' || raw.length === 0) {
+      return positions;
+    }
+    try {
+      const parsed = JSON.parse(raw) as StoredReadPosition[];
+      if (!Array.isArray(parsed)) {
+        return positions;
+      }
+      for (let i = 0; i < parsed.length; i++) {
+        const item = storedToReadPosition(parsed[i]);
+        if (item.gid > 0 && item.pageIndex >= 0) {
+          positions.push(item);
+        }
+      }
+    } catch (error) {
+    }
+    return positions;
+  }
+
+  private removeReadPosition(gid: number): void {
+    const next: ReadPosition[] = [];
+    for (let i = 0; i < this.readPositions.length; i++) {
+      if (this.readPositions[i].gid !== gid) {
+        next.push(this.readPositions[i]);
+      }
+    }
+    this.readPositions = next;
+  }
+
+  private pruneReadPositions(): void {
+    const gids: number[] = [];
+    for (let i = 0; i < this.items.length; i++) {
+      gids.push(this.items[i].gid);
+    }
+    const next: ReadPosition[] = [];
+    for (let i = 0; i < this.readPositions.length; i++) {
+      if (gids.indexOf(this.readPositions[i].gid) >= 0) {
+        next.push(this.readPositions[i]);
+      }
+    }
+    this.readPositions = next;
+  }
+}
+
+function storedToGalleryInfo(item: StoredGalleryInfo): GalleryInfo {
+  const urlParts = parseStoredGalleryUrl(item.galleryUrl);
+  const token = typeof item.token === 'string' && item.token.length > 0 ? item.token : urlParts.token;
+  return {
+    gid: typeof item.gid === 'number' && item.gid > 0 ? item.gid : urlParts.gid,
+    token: token,
+    title: typeof item.title === 'string' ? item.title : '',
+    titleJpn: item.titleJpn,
+    thumb: item.thumb,
+    category: typeof item.category === 'number' ? item.category : GalleryCategory.Unknown,
+    posted: item.posted,
+    uploader: item.uploader,
+    rating: typeof item.rating === 'number' ? item.rating : -1,
+    rated: typeof item.rated === 'boolean' ? item.rated : false,
+    simpleLanguage: item.simpleLanguage,
+    simpleTags: item.simpleTags,
+    pages: typeof item.pages === 'number' ? item.pages : 0,
+    thumbWidth: typeof item.thumbWidth === 'number' ? item.thumbWidth : 0,
+    thumbHeight: typeof item.thumbHeight === 'number' ? item.thumbHeight : 0,
+    favoriteSlot: typeof item.favoriteSlot === 'number' ? item.favoriteSlot : -2,
+    favoriteName: item.favoriteName,
+    tagList: item.tagList,
+    detailTags: storedToGalleryTagGroups(item.detailTags),
+    detailLanguage: item.detailLanguage,
+    historyTime: typeof item.historyTime === 'number' && item.historyTime > 0 ? item.historyTime : undefined
+  };
+}
+
+function parseStoredGalleryUrl(url: string | undefined): StoredGalleryUrlParts {
+  if (url === undefined || url.length === 0) {
+    return { gid: 0, token: '' };
+  }
+  const marker = '/g/';
+  const markerIndex = url.indexOf(marker);
+  if (markerIndex < 0) {
+    return { gid: 0, token: '' };
+  }
+  const rest = url.substring(markerIndex + marker.length);
+  const parts = rest.split('/');
+  if (parts.length < 2) {
+    return { gid: 0, token: '' };
+  }
+  const gid = Number.parseInt(parts[0]);
+  if (Number.isNaN(gid) || gid <= 0) {
+    return { gid: 0, token: '' };
+  }
+  return { gid: gid, token: parts[1] };
+}
+
+function galleryInfoToStored(item: GalleryInfo): StoredGalleryInfo {
+  const tags = galleryDetailTags(item);
+  const language = galleryDetailLanguage(item);
+  return {
+    galleryUrl: EhUrl.getGalleryDetailUrl(item.gid, item.token),
+    gid: item.gid,
+    token: item.token,
+    title: item.title,
+    titleJpn: item.titleJpn,
+    thumb: item.thumb,
+    category: item.category,
+    posted: item.posted,
+    uploader: item.uploader,
+    rating: item.rating,
+    rated: item.rated,
+    simpleLanguage: item.simpleLanguage,
+    simpleTags: item.simpleTags,
+    pages: item.pages,
+    thumbWidth: item.thumbWidth,
+    thumbHeight: item.thumbHeight,
+    favoriteSlot: item.favoriteSlot,
+    favoriteName: item.favoriteName,
+    tagList: item.tagList,
+    detailTags: galleryTagGroupsToStored(tags),
+    detailLanguage: language,
+    historyTime: item.historyTime
+  };
+}
+
+function storedToReadPosition(item: StoredReadPosition): ReadPosition {
+  const updatedAt = typeof item.updatedAt === 'number' ? item.updatedAt : 0;
+  return {
+    gid: typeof item.gid === 'number' ? item.gid : 0,
+    pageIndex: typeof item.pageIndex === 'number' ? item.pageIndex : -1,
+    progressUpdatedAt: typeof item.progressUpdatedAt === 'number' ? item.progressUpdatedAt : updatedAt,
+    updatedAt: updatedAt,
+    readerTranslations: cloneReaderPageTranslations(item.readerTranslations)
+  };
+}
+
+function normalizeReadingProgressBackupInfo(value: ReadingProgressBackupInfo): ReadingProgressBackupInfo | null {
+  if (value === undefined || value === null || typeof value.gid !== 'number' || value.gid <= 0 ||
+    typeof value.pageIndex !== 'number' || value.pageIndex < 0) {
+    return null;
+  }
+  const updatedAt = typeof value.updatedAt === 'number' && value.updatedAt >= 0 ? value.updatedAt : 0;
+  const progressUpdatedAt = typeof value.progressUpdatedAt === 'number' && value.progressUpdatedAt >= 0 ?
+    value.progressUpdatedAt : updatedAt;
+  const result: ReadingProgressBackupInfo = {
+    gid: value.gid,
+    pageIndex: value.pageIndex,
+    progressUpdatedAt: progressUpdatedAt,
+    updatedAt: Math.max(updatedAt, progressUpdatedAt)
+  };
+  return result;
+}
+
+function cloneGalleryInfos(items: GalleryInfo[]): GalleryInfo[] {
+  const cloned: GalleryInfo[] = [];
+  for (let i = 0; i < items.length; i++) {
+    cloned.push(cloneGalleryInfo(items[i]));
+  }
+  return cloned;
+}
+
+function cloneGalleryInfo(item: GalleryInfo): GalleryInfo {
+  const tags = galleryDetailTags(item);
+  const language = galleryDetailLanguage(item);
+  return {
+    gid: item.gid,
+    token: item.token,
+    title: item.title,
+    titleJpn: item.titleJpn,
+    thumb: item.thumb,
+    category: item.category,
+    posted: item.posted,
+    uploader: item.uploader,
+    rating: item.rating,
+    rated: item.rated,
+    simpleLanguage: item.simpleLanguage,
+    simpleTags: item.simpleTags,
+    pages: item.pages,
+    thumbWidth: item.thumbWidth,
+    thumbHeight: item.thumbHeight,
+    favoriteSlot: item.favoriteSlot,
+    favoriteName: item.favoriteName,
+    tagList: item.tagList,
+    detailTags: cloneGalleryTagGroups(tags),
+    detailLanguage: language,
+    historyTime: item.historyTime
+  };
+}
+
+function galleryTagGroupsToStored(groups: GalleryTagGroup[] | undefined): StoredGalleryTagGroup[] | undefined {
+  if (groups === undefined) {
+    return undefined;
+  }
+  const next: StoredGalleryTagGroup[] = [];
+  for (let i = 0; i < groups.length; i++) {
+    next.push({
+      namespace: groups[i].namespace,
+      tags: cloneStringArray(groups[i].tags)
+    });
+  }
+  return next;
+}
+
+async function writeTextFileQuietly(path: string, value: string): Promise<void> {
+  let file: fs.File | null = null;
+  try {
+    file = await fs.open(path, fs.OpenMode.CREATE | fs.OpenMode.TRUNC | fs.OpenMode.READ_WRITE);
+    await fs.write(file.fd, value);
+  } catch (error) {
+  } finally {
+    if (file !== null) {
+      try {
+        await fs.close(file);
+      } catch (error) {
+      }
+    }
+  }
+}
+
+export const ehHistoryStore: EhHistoryStore = new EhHistoryStore();

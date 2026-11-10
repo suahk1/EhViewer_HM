@@ -1,0 +1,307 @@
+﻿import { GalleryDetail } from '../../model/GalleryModels';
+import {
+  createEmptyDetail,
+  uiText
+} from '../../shared/AppRuntime';
+import {
+  themeFavoriteText,
+  themeDetailActionColor,
+  themeInactiveActionText,
+  themeOnPrimaryText,
+  themePrimaryColor,
+  themePrimaryText,
+  themeSecondaryText,
+  themeShadowColor,
+  themeSurface,
+  themeSurfaceVariant,
+  themeTransparentColor
+} from '../../shared/AppPalette';
+import {
+  uiButtonMaterial,
+  uiTransparentButtonBackgroundEffect,
+  uiDialogBlurOptions,
+  uiDialogBlurStyle,
+  uiDialogMaterial,
+  uiDialogSurfaceBackground,
+  uiDialogSurfaceRadius,
+  uiDialogSurfaceShadow,
+  uiMaterialForegroundColor,
+  uiRadius,
+  uiMaterialBackground
+} from '../../shared/AppSurfaceStyle';
+@Component
+export struct DetailActions {
+  @Prop detail: GalleryDetail = createEmptyDetail();
+  @Prop isDetailLoaded: boolean = false;
+  @Prop isFavorited: boolean = false;
+  onFavorite: () => void = () => {};
+  onShare: () => void = () => {};
+  onRate: () => void = () => {};
+  onTorrent: () => void = () => {};
+  onArchive: () => void = () => {};
+  onHath: () => void = () => {};
+  onSimilar: () => void = () => {};
+  onSearchCover: () => void = () => {};
+  onBlockedAction: () => void = () => {};
+
+  build() {
+    Column() {
+      Scroll() {
+        Row({ space: 0 }) {
+          DetailActionItem({
+            symbolIcon: this.isFavorited ? $r('sys.symbol.heart_fill') : $r('sys.symbol.heart'),
+            label: this.isFavorited ? uiText('Favorited') : uiText('Favorite'),
+            isActive: this.detail.gid > 0,
+            isFilled: this.isFavorited,
+            onBlocked: this.onBlockedAction,
+            onTap: this.onFavorite
+          })
+          DetailActionItem({
+            symbolIcon: $r('sys.symbol.star'),
+            label: uiText('Rate'),
+            // 未登录时也要能点：点了才知道「需要登录」，否则按钮像坏的（DetailActionItem 在 !isActive 时吞掉点击）。
+            isActive: this.detail.gid > 0,
+            isFilled: this.detail.rated,
+            onBlocked: this.onBlockedAction,
+            onTap: this.onRate
+          })
+          DetailActionItem({
+            symbolIcon: $r('sys.symbol.share'),
+            label: uiText('Share'),
+            isActive: this.detail.gid > 0,
+            onBlocked: this.onBlockedAction,
+            onTap: this.onShare
+          })
+          DetailActionItem({
+            symbolIcon: $r('sys.symbol.save'),
+            label: this.isDetailLoaded && this.detail.torrentCount > 0 ?
+              uiText('Torrent') + ' (' + this.detail.torrentCount.toString() + ')' : uiText('Torrent'),
+            isActive: this.isDetailLoaded && this.detail.torrentCount > 0 && this.detail.torrentUrl.length > 0,
+            onBlocked: this.onBlockedAction,
+            onTap: this.onTorrent
+          })
+          DetailActionItem({
+            symbolIcon: $r('sys.symbol.archivebox'),
+            label: uiText('Save Archive'),
+            isActive: this.isDetailLoaded && this.detail.archiveUrl.length > 0,
+            onBlocked: this.onBlockedAction,
+            onTap: this.onArchive
+          })
+          DetailActionItem({
+            symbolIcon: $r('sys.symbol.arrow_down_circle'),
+            label: uiText('H@H'),
+            isActive: this.isDetailLoaded && this.detail.archiveUrl.length > 0,
+            onBlocked: this.onBlockedAction,
+            onTap: this.onHath
+          })
+          DetailActionItem({
+            symbolIcon: $r('sys.symbol.play_arrow_triangle_2_circlepath'),
+            label: uiText('Similar'),
+            isActive: this.isDetailLoaded && this.detail.gid > 0,
+            onBlocked: this.onBlockedAction,
+            onTap: this.onSimilar
+          })
+          DetailActionItem({
+            symbolIcon: $r('sys.symbol.magnifyingglass'),
+            label: uiText('Search cover'),
+            isActive: this.isDetailLoaded && this.detail.thumb !== undefined && this.detail.thumb.length > 0,
+            onBlocked: this.onBlockedAction,
+            onTap: this.onSearchCover
+          })
+        }
+        .padding({ left: 8, right: 8, top: 10, bottom: 10 })
+      }
+      .scrollable(ScrollDirection.Horizontal)
+      .scrollBar(BarState.Off)
+      .width('100%')
+      .clip(false)
+      // 关掉滚动交互：这排按钮在手机宽度下本来就能排下，
+      // 而 Scroll 会把「点击」判成「拖动」，导致所有按钮点了没反应。
+      .enableScrollInteraction(false)
+
+      RatingSummary({
+        rating: this.detail.rating,
+        ratingCount: this.detail.ratingCount,
+        isDetailLoaded: this.isDetailLoaded
+      })
+        .margin({ top: 8 })
+    }
+    .width('100%')
+    .padding({ top: 12, bottom: 12 })
+    .backgroundColor(themeSurface())
+  }
+}
+
+@Component
+export struct RatingSummary {
+  @Prop rating: number = -1;
+  @Prop ratingCount: number = 0;
+  @Prop isDetailLoaded: boolean = false;
+
+  private ratingLabel(): string {
+    if (this.rating < 0) {
+      return '-';
+    }
+    return this.rating.toString() + ' / 5';
+  }
+
+  build() {
+    Column() {
+      Text(this.isDetailLoaded ? this.ratingLabel() + '  (' + this.ratingCount.toString() + ')' : uiText('Loading rating...'))
+        .fontSize(13)
+        .fontColor(themeSecondaryText())
+      Row({ space: 2 }) {
+        ForEach([0, 1, 2, 3, 4], (index: number) => {
+          SymbolGlyph($r('sys.symbol.star_fill'))
+            .fontSize(16)
+            .fontColor([this.rating >= index + 1 ? '#F7C948' : '#D0D5DD'])
+        }, (index: number) => index.toString())
+      }
+      .margin({ top: 4 })
+    }
+    .alignItems(HorizontalAlign.Center)
+    .width('100%')
+  }
+}
+
+@Component
+export struct RatingPanel {
+  @Prop rating: number = 5;
+  onChange: (rating: number) => void = (_rating: number) => {};
+  onCancel: () => void = () => {};
+  onSubmit: () => void = () => {};
+
+  build() {
+    Column() {
+      Text(uiText('Rate'))
+        .fontSize(18)
+        .fontWeight(FontWeight.Bold)
+        .fontColor(themePrimaryText())
+        .width('100%')
+      Text(this.rating.toString() + ' / 5')
+        .fontSize(13)
+        .fontColor(themeSecondaryText())
+        .width('100%')
+        .margin({ top: 4, bottom: 14 })
+      Row({ space: 8 }) {
+        ForEach([1, 2, 3, 4, 5], (value: number) => {
+          SymbolGlyph($r('sys.symbol.star_fill'))
+            .fontSize(32)
+            .fontColor([this.rating >= value ? '#F7C948' : '#D0D5DD'])
+            .onClick(() => {
+              this.onChange(value);
+            })
+        }, (value: number) => value.toString())
+      }
+      .width('100%')
+      .justifyContent(FlexAlign.Center)
+
+      Row({ space: 10 }) {
+        Button(uiText('Cancel'))
+          .type(ButtonType.Normal)
+          .height(38)
+          .fontSize(13)
+          .fontColor(uiMaterialForegroundColor(themeSecondaryText()))
+          .backgroundColor(uiMaterialBackground(themeSurfaceVariant()))
+          .layoutWeight(1)
+          .borderRadius(uiRadius(4))
+          .backgroundEffect(uiTransparentButtonBackgroundEffect())
+          .systemMaterial(uiButtonMaterial())
+          .onClick(() => {
+            this.onCancel();
+          })
+        Button(uiText('Submit'))
+          .type(ButtonType.Normal)
+          .height(38)
+          .fontSize(13)
+          .fontColor(uiMaterialForegroundColor(themeOnPrimaryText()))
+          .backgroundColor(uiMaterialBackground(themePrimaryColor()))
+          .layoutWeight(1)
+          .borderRadius(uiRadius(4))
+          .backgroundEffect(uiTransparentButtonBackgroundEffect())
+          .systemMaterial(uiButtonMaterial())
+          .onClick(() => {
+            this.onSubmit();
+          })
+      }
+      .width('100%')
+      .margin({ top: 18 })
+    }
+    .width('100%')
+    .padding(18)
+    .backgroundColor(uiMaterialBackground(uiDialogSurfaceBackground()))
+    .shadow(uiDialogSurfaceShadow())
+    .borderRadius(uiDialogSurfaceRadius())
+    .backgroundBlurStyle(uiDialogBlurStyle(), uiDialogBlurOptions())
+    .systemMaterial(uiDialogMaterial())
+  }
+}
+
+@Component
+export struct DetailActionItem {
+  @Prop symbolIcon: Resource = $r('sys.symbol.heart');
+  @Prop label: string = '';
+  @Prop isActive: boolean = true;
+  @Prop isFilled: boolean = false;
+  onTap: () => void = () => {};
+  // 未就绪时也要有反应：告诉用户「还在加载」，而不是静默吞掉。
+  onBlocked: () => void = () => {};
+  @State pressed: boolean = false;
+
+  build() {
+    Column({ space: 4 }) {
+      SymbolGlyph(this.symbolIcon)
+        .fontSize(20)
+        .fontColor([this.isActive ? uiMaterialForegroundColor(this.isFilled ? themeFavoriteText() :
+          themeDetailActionColor()) : themeInactiveActionText()])
+      Text(this.label)
+        .fontSize(9)
+        .fontColor(this.isActive ? uiMaterialForegroundColor(themeDetailActionColor()) : themeInactiveActionText())
+        .textAlign(TextAlign.Center)
+        .maxLines(1)
+        .textOverflow({ overflow: TextOverflow.Ellipsis })
+    }
+    .width(46)
+    .height(58)
+    .justifyContent(FlexAlign.Center)
+    .backgroundColor(uiMaterialBackground(this.pressed ? themeSurfaceVariant() : themeTransparentColor()))
+    .animation({ duration: 120, curve: Curve.EaseOut })
+    .scale({ x: this.pressed ? 0.92 : 1, y: this.pressed ? 0.92 : 1 })
+    .shadow({
+      radius: this.pressed ? 2 : 8,
+      color: themeShadowColor(),
+      offsetX: 0,
+      offsetY: this.pressed ? 1 : 3
+    })
+    .borderRadius(34)
+    .backgroundEffect(uiTransparentButtonBackgroundEffect())
+    .systemMaterial(uiButtonMaterial())
+    .onTouch((event: TouchEvent) => {
+      if (!this.isActive) {
+        return;
+      }
+      if (event.type === TouchType.Down) {
+        this.pressed = true;
+      } else if (event.type === TouchType.Up || event.type === TouchType.Cancel) {
+        this.pressed = false;
+      }
+    })
+    .onClick(() => {
+      if (this.isActive) {
+        this.onTap();
+      } else {
+        this.onBlocked();
+      }
+    })
+    // 外层是横向 Scroll，onClick 常被判给滚动而丢失；TapGesture 优先级更高，
+    // 手指没位移时一定拿得到点击。
+    .gesture(TapGesture({ count: 1 }).onAction(() => {
+      if (this.isActive) {
+        this.onTap();
+      } else {
+        this.onBlocked();
+      }
+    }))
+  }
+}
+

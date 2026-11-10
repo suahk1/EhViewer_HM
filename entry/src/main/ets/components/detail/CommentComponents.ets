@@ -1,0 +1,455 @@
+import { promptAction } from '@kit.ArkUI';
+import { GalleryComment } from '../../model/GalleryModels';
+import { ehTranslationService } from '../../services/EhTranslationService';
+import { ehCommentBlacklistStore } from '../../services/EhCommentBlacklistStore';
+import {
+  LANGUAGE_REVISION_KEY,
+  getAbilityContext,
+  plainTextFromHtml,
+  shouldUseChineseUi,
+  uiText
+} from '../../shared/AppRuntime';
+import {
+  themeAccentTextColor,
+  themeDangerText,
+  themeInactiveActionText,
+  themePrimaryText,
+  themeSecondaryText,
+  themeSelectedButtonColor,
+  themeSelectedButtonTextColor,
+  themeSuccessText,
+  themeSurface,
+  themeSurfaceVariant
+} from '../../shared/AppPalette';
+import { uiButtonMaterial, uiTransparentButtonBackgroundEffect, uiMaterialForegroundColor, uiRadius,
+  uiMaterialBackground, uiTintedButtonMaterial
+} from '../../shared/AppSurfaceStyle';
+
+interface CommentTextSegment {
+  text: string;
+  url: string;
+}
+
+const COMMENT_URL_PATTERN: RegExp = /(https?:\/\/[^\s<>"']+|magnet:\?[^\s<>"']+)/gi;
+const COMMENT_DATE_PATTERN: RegExp = /^(\d{1,2})\s+([A-Za-z]+)\s+(\d{4}),\s+(\d{1,2}):(\d{2})$/;
+const COMMENT_MONTHS: string[] = [
+  'january', 'february', 'march', 'april', 'may', 'june',
+  'july', 'august', 'september', 'october', 'november', 'december'
+];
+
+function chineseCommentPostedText(posted: string): string {
+  if (!shouldUseChineseUi()) {
+    return posted;
+  }
+  const match = COMMENT_DATE_PATTERN.exec(posted.trim());
+  if (match === null) {
+    return posted;
+  }
+  const month = COMMENT_MONTHS.indexOf(match[2].toLowerCase());
+  const day = Number.parseInt(match[1]);
+  const year = Number.parseInt(match[3]);
+  const hour = Number.parseInt(match[4]);
+  const minute = Number.parseInt(match[5]);
+  if (month < 0 || Number.isNaN(day) || Number.isNaN(year) || Number.isNaN(hour) || Number.isNaN(minute)) {
+    return posted;
+  }
+  const hourText = hour < 10 ? '0' + hour.toString() : hour.toString();
+  const minuteText = minute < 10 ? '0' + minute.toString() : minute.toString();
+  return year.toString() + '年' + (month + 1).toString() + '月' + day.toString() + '日 ' +
+    hourText + ':' + minuteText;
+}
+
+function scoreText(score: number): string {
+  return score > 0 ? '+' + score.toString() : score.toString();
+}
+
+function scoreColor(score: number): string {
+  if (score > 0) {
+    return themeSuccessText();
+  }
+  if (score < 0) {
+    return themeDangerText();
+  }
+  return themeSecondaryText();
+}
+
+function commentPlainTextFromHtml(html: string): string {
+  const withAnchorUrls = html.replace(/<a[^>]+href=["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi,
+    (_all: string, href: string, label: string): string => {
+      const text = plainTextFromHtml(label);
+      if (text.length === 0 || text === href) {
+        return href;
+      }
+      return text + ' ' + href;
+    });
+  return plainTextFromHtml(withAnchorUrls);
+}
+
+function trimTrailingUrlPunctuation(url: string): string {
+  let value = url;
+  while (value.length > 0 && (value.endsWith('.') || value.endsWith(',') || value.endsWith(';') ||
+    value.endsWith(')') || value.endsWith(']'))) {
+    value = value.substring(0, value.length - 1);
+  }
+  return value;
+}
+
+function commentTextSegments(text: string): CommentTextSegment[] {
+  const result: CommentTextSegment[] = [];
+  COMMENT_URL_PATTERN.lastIndex = 0;
+  let cursor = 0;
+  let match: RegExpExecArray | null = COMMENT_URL_PATTERN.exec(text);
+  while (match !== null) {
+    if (match.index > cursor) {
+      result.push({ text: text.substring(cursor, match.index), url: '' });
+    }
+    const rawUrl = match[0];
+    const url = trimTrailingUrlPunctuation(rawUrl);
+    result.push({ text: url, url: url });
+    const trailing = rawUrl.substring(url.length);
+    if (trailing.length > 0) {
+      result.push({ text: trailing, url: '' });
+    }
+    cursor = match.index + rawUrl.length;
+    match = COMMENT_URL_PATTERN.exec(text);
+  }
+  if (cursor < text.length) {
+    result.push({ text: text.substring(cursor), url: '' });
+  }
+  if (result.length === 0) {
+    result.push({ text: text, url: '' });
+  }
+  return result;
+}
+
+function openCommentUrl(url: string): void {
+  const context = getAbilityContext();
+  if (context === undefined || url.length === 0) {
+    return;
+  }
+  context.startAbility({
+    action: 'ohos.want.action.viewData',
+    entities: ['entity.system.browsable'],
+    uri: url,
+    parameters: {
+      'ohos.ability.params.showDefaultPicker': true
+    }
+  }).catch(() => {});
+}
+
+function isGalleryDetailUrl(url: string): boolean {
+  return /(?:^https?:\/\/(?:e-hentai\.org|exhentai\.org)|^)\/g\/\d+\/[^\/?#]+\/?/i.test(url);
+}
+
+@Component
+export struct CommentLinkedText {
+  @Prop @Watch('onContentChanged') html: string = '';
+  @Prop @Watch('onTranslationChanged') translateComment: boolean = false;
+  @Prop @Watch('onTranslationPriorityChanged') translationPriority: number = 2;
+  @Prop maxLines: number = 1000;
+  @Prop openGalleryLinksInApp: boolean = false;
+  @Prop selectable: boolean = true;
+  onOpenGalleryLink: (url: string) => void = (_url: string) => {};
+  onTapText: () => void = () => {};
+  @State translatedText: string = '';
+  private translationRequestVersion: number = 0;
+
+  aboutToAppear(): void {
+    this.resetTranslation();
+  }
+
+  onContentChanged(): void {
+    this.resetTranslation();
+  }
+
+  onTranslationChanged(): void {
+    this.resetTranslation();
+  }
+
+  onTranslationPriorityChanged(): void {
+    this.requestTranslationIfNeeded();
+  }
+
+  private resetTranslation(): void {
+    this.translationRequestVersion++;
+    this.translatedText = '';
+    this.requestTranslationIfNeeded();
+  }
+
+  private requestTranslationIfNeeded(): void {
+    if (!this.translateComment || this.translationPriority <= 0) {
+      return;
+    }
+    if (this.translatedText.length > 0) {
+      return;
+    }
+    const source = commentPlainTextFromHtml(this.html);
+    if (source.length === 0) {
+      return;
+    }
+    this.translationRequestVersion++;
+    const version = this.translationRequestVersion;
+    ehTranslationService.translateComment(source, this.translationPriority).then((translated: string) => {
+      if (version === this.translationRequestVersion && this.translateComment) {
+        this.translatedText = translated;
+      }
+    }).catch(() => {
+      if (version === this.translationRequestVersion && this.translatedText.length === 0) {
+        this.translatedText = '';
+      }
+    });
+  }
+
+  private displayText(): string {
+    if (this.translateComment && this.translatedText.length > 0) {
+      return this.translatedText;
+    }
+    return commentPlainTextFromHtml(this.html);
+  }
+
+  build() {
+    Text() {
+      ForEach(commentTextSegments(this.displayText()), (segment: CommentTextSegment) => {
+        Span(segment.text)
+          .fontColor(segment.url.length > 0 ? themeAccentTextColor() : themePrimaryText())
+          .decoration({
+            type: segment.url.length > 0 ? TextDecorationType.Underline : TextDecorationType.None,
+            color: themeAccentTextColor()
+          })
+          .onClick(() => {
+            if (segment.url.length > 0) {
+              if (this.openGalleryLinksInApp && isGalleryDetailUrl(segment.url)) {
+                this.onOpenGalleryLink(segment.url);
+              } else {
+                openCommentUrl(segment.url);
+              }
+            } else if (!this.selectable) {
+              this.onTapText();
+            }
+          })
+      }, (segment: CommentTextSegment, index: number) => index.toString() + '-' + segment.text)
+    }
+    .fontSize(16)
+    .fontColor(themePrimaryText())
+    .lineHeight(24)
+    .copyOption(CopyOptions.LocalDevice)
+    .textSelectable(this.selectable ? TextSelectableMode.SELECTABLE_FOCUSABLE : TextSelectableMode.UNSELECTABLE)
+    .draggable(false)
+    .maxLines(this.maxLines)
+    .textOverflow({ overflow: TextOverflow.Ellipsis })
+    .width('100%')
+  }
+}
+
+@Component
+export struct CommentVoteButton {
+  @Prop symbolIcon: Resource = $r('sys.symbol.arrow_up_circle');
+  @Prop enabledValue: boolean = false;
+  @Prop selected: boolean = false;
+  onClickAction: () => void = () => {};
+
+  private voteForeground(): ResourceColor {
+    if (!this.enabledValue) {
+      return themeInactiveActionText();
+    }
+    if (this.selected) {
+      return themeSelectedButtonTextColor();
+    }
+    return uiMaterialForegroundColor(themePrimaryText());
+  }
+
+  private voteBackground(): ResourceColor {
+    if (this.selected) {
+      // Keep the selected fill visible on API 26 as well: uiMaterialBackground
+      // clears the authored color there, and the button opts out of system
+      // material, so a solid selected color cannot hide any material filter.
+      return themeSelectedButtonColor();
+    }
+    return uiMaterialBackground(themeSurfaceVariant());
+  }
+
+  build() {
+    Button({ type: ButtonType.Normal, stateEffect: true }) {
+      SymbolGlyph(this.symbolIcon)
+        .fontSize(22)
+        .fontColor([this.voteForeground()])
+    }
+      .height(36)
+      .width(46)
+      .backgroundColor(this.voteBackground())
+      .opacity(this.enabledValue ? 1 : 0.56)
+      .enabled(this.enabledValue)
+      .padding(0)
+      .borderRadius(uiRadius(5))
+    .backgroundEffect(uiTransparentButtonBackgroundEffect())
+    .systemMaterial(this.selected ? uiTintedButtonMaterial(themeSelectedButtonColor()) : uiButtonMaterial())
+      .onClick(() => {
+        this.onClickAction();
+      })
+  }
+}
+
+@Component
+export struct GalleryCommentRow {
+  @Prop comment: GalleryComment = {
+    id: '',
+    user: '',
+    posted: '',
+    content: '',
+    score: 0
+  };
+  maxLines: number = 1000;
+  compact: boolean = false;
+  openGalleryLinksInApp: boolean = false;
+  selectableText: boolean = true;
+  rowClickable: boolean = false;
+  @Prop translateComment: boolean = false;
+  @Prop translationPriority: number = 2;
+  @StorageProp(LANGUAGE_REVISION_KEY) languageRevision: number = 0;
+  onVoteComment: (comment: GalleryComment, vote: number) => void = (_comment: GalleryComment, _vote: number) => {};
+  onOpenGalleryLink: (url: string) => void = (_url: string) => {};
+  onTapRow: () => void = () => {};
+  onBlockUser: () => void = () => {};
+
+  private canVoteUp(): boolean {
+    return this.comment.id !== '0' && this.comment.voteUpAble === true;
+  }
+
+  private canVoteDown(): boolean {
+    return this.comment.id !== '0' && this.comment.voteDownAble === true;
+  }
+
+  private blockCommentUser(): void {
+    if (!ehCommentBlacklistStore.addFromComment(this.comment)) {
+      this.showToast('This user is already blocked');
+      return;
+    }
+    this.onBlockUser();
+    this.showToast('User added to comment blacklist');
+  }
+
+  // 这个 × 是「屏蔽该用户」而不是删这一条：加进黑名单后他在所有画廊的评论都不再显示，
+  // 影响面比看着大，先问一句再执行。
+  private requestBlockCommentUser(): void {
+    const user = this.comment.user.trim();
+    if (user.length === 0) {
+      return;
+    }
+    this.getUIContext().getPromptAction().showDialog({
+      title: uiText('Block user'),
+      message: uiText('Hide every comment from this user? You can undo it in Settings - Comment blacklist.'),
+      buttons: [
+        { text: uiText('Cancel'), color: themeSecondaryText() },
+        { text: uiText('Block'), color: themeDangerText() }
+      ]
+    }).then((result: promptAction.ShowDialogSuccessResponse) => {
+      if (result.index === 1) {
+        this.blockCommentUser();
+      }
+    }).catch((_error: Error) => {
+    });
+  }
+
+  private showToast(message: string): void {
+    try {
+      this.getUIContext().getPromptAction().showToast({ message: uiText(message) });
+    } catch (error) {
+    }
+  }
+
+  build() {
+    Column() {
+      Row({ space: 8 }) {
+        Column() {
+          Text(this.comment.user.length > 0 ? this.comment.user : uiText('Anonymous'))
+            .fontSize(this.compact ? 13 : 14)
+            .fontWeight(FontWeight.Medium)
+            .fontColor(themePrimaryText())
+            .maxLines(1)
+            .textOverflow({ overflow: TextOverflow.Ellipsis })
+            .width('100%')
+          Text(chineseCommentPostedText(this.comment.posted))
+            .fontSize(11)
+            .fontColor(themeSecondaryText())
+            .maxLines(1)
+            .textOverflow({ overflow: TextOverflow.Ellipsis })
+            .width('100%')
+            .margin({ top: 3 })
+        }
+        .alignItems(HorizontalAlign.Start)
+        .layoutWeight(1)
+
+        Text(scoreText(this.comment.score))
+          .fontSize(13)
+          .fontWeight(FontWeight.Medium)
+          .fontColor(scoreColor(this.comment.score))
+          .margin({ right: 2 })
+        if (!this.compact && this.comment.user.trim().length > 0) {
+          Button({ type: ButtonType.Normal, stateEffect: true }) {
+            SymbolGlyph($r('sys.symbol.xmark_circle'))
+              .fontSize(21)
+              .fontColor([uiMaterialForegroundColor(themeSecondaryText())])
+          }
+          .height(36)
+          .width(40)
+          .padding(0)
+          .borderRadius(uiRadius(5))
+          .backgroundColor(uiMaterialBackground(themeSurfaceVariant()))
+    .backgroundEffect(uiTransparentButtonBackgroundEffect())
+    .systemMaterial(uiButtonMaterial())
+          .accessibilityDescription(uiText('Block user'))
+          .onClick(() => {
+            this.requestBlockCommentUser();
+          })
+        }
+        CommentVoteButton({
+          symbolIcon: $r('sys.symbol.arrow_up_circle'),
+          enabledValue: this.canVoteUp(),
+          selected: this.comment.voteUpEd === true,
+          onClickAction: () => {
+            this.onVoteComment(this.comment, 1);
+          }
+        })
+        CommentVoteButton({
+          symbolIcon: $r('sys.symbol.arrow_down_circle'),
+          enabledValue: this.canVoteDown(),
+          selected: this.comment.voteDownEd === true,
+          onClickAction: () => {
+            this.onVoteComment(this.comment, -1);
+          }
+        })
+      }
+      .width('100%')
+      .margin({ bottom: 8 })
+
+      CommentLinkedText({
+        html: this.comment.content,
+        maxLines: this.maxLines,
+        openGalleryLinksInApp: this.openGalleryLinksInApp,
+        selectable: this.selectableText,
+        translateComment: this.translateComment,
+        translationPriority: this.translationPriority,
+        onOpenGalleryLink: this.onOpenGalleryLink,
+        onTapText: this.onTapRow
+      })
+
+      if (this.comment.voteState !== undefined && this.comment.voteState.length > 0) {
+        Text(this.comment.voteState)
+          .fontSize(11)
+          .fontColor(themeSecondaryText())
+          .margin({ top: 8 })
+          .width('100%')
+      }
+    }
+    .alignItems(HorizontalAlign.Start)
+    .width('100%')
+    .padding(this.compact ? 10 : { left: 16, right: 16, top: 14, bottom: 14 })
+    .backgroundColor(this.compact ? themeSurfaceVariant() : themeSurface())
+    .borderRadius(this.compact ? uiRadius(6) : 0)
+    .onClick(() => {
+      if (this.rowClickable) {
+        this.onTapRow();
+      }
+    })
+  }
+}

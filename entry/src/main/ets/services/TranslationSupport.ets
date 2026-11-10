@@ -1,0 +1,275 @@
+
+export interface SavedTranslationApi {
+  name: string;
+  baseUrl: string;
+  apiKey: string;
+  model: string;
+}
+
+interface StoredTranslationApi {
+  name?: string;
+  baseUrl?: string;
+  apiKey?: string;
+  model?: string;
+}
+
+export function parseSavedTranslationApis(raw: string): SavedTranslationApi[] {
+  if (raw.trim().length === 0) {
+    return [];
+  }
+  try {
+    const parsed = JSON.parse(raw) as StoredTranslationApi[];
+    if (!Array.isArray(parsed)) {
+      return [];
+    }
+    const result: SavedTranslationApi[] = [];
+    for (let i = 0; i < parsed.length; i++) {
+      const item = parsed[i];
+      if (typeof item.name !== 'string' || item.name.trim().length === 0 ||
+        typeof item.baseUrl !== 'string' || typeof item.apiKey !== 'string' || typeof item.model !== 'string') {
+        continue;
+      }
+      const name = uniqueTranslationApiName(result, item.name.trim());
+      result.push({
+        name: name,
+        baseUrl: item.baseUrl.trim(),
+        apiKey: item.apiKey,
+        model: item.model.trim()
+      });
+    }
+    return result;
+  } catch (_error) {
+    return [];
+  }
+}
+
+export function serializeSavedTranslationApis(items: SavedTranslationApi[]): string {
+  return JSON.stringify(items);
+}
+
+export function cloneSavedTranslationApis(items: SavedTranslationApi[]): SavedTranslationApi[] {
+  const result: SavedTranslationApi[] = [];
+  for (let i = 0; i < items.length; i++) {
+    result.push({
+      name: items[i].name,
+      baseUrl: items[i].baseUrl,
+      apiKey: items[i].apiKey,
+      model: items[i].model
+    });
+  }
+  return result;
+}
+
+export function findSavedTranslationApi(items: SavedTranslationApi[], name: string): SavedTranslationApi | null {
+  for (let i = 0; i < items.length; i++) {
+    if (items[i].name === name) {
+      return items[i];
+    }
+  }
+  return items.length > 0 ? items[0] : null;
+}
+
+export function uniqueTranslationApiName(items: SavedTranslationApi[], preferred: string,
+  currentName: string = ''): string {
+  const base = preferred.trim().length > 0 ? preferred.trim() : 'Custom API';
+  let candidate = base;
+  let suffix = 2;
+  while (translationApiNameExists(items, candidate, currentName)) {
+    candidate = base + ' ' + suffix.toString();
+    suffix++;
+  }
+  return candidate;
+}
+
+export function createSavedTranslationApi(items: SavedTranslationApi[]): SavedTranslationApi {
+  return {
+    name: uniqueTranslationApiName(items, 'Custom API'),
+    baseUrl: 'https://api.example.com/v1',
+    apiKey: '',
+    model: ''
+  };
+}
+
+function translationApiNameExists(items: SavedTranslationApi[], name: string, currentName: string): boolean {
+  for (let i = 0; i < items.length; i++) {
+    if (items[i].name === name && items[i].name !== currentName) {
+      return true;
+    }
+  }
+  return false;
+}
+
+export interface TranslationPromptProfile {
+  id: string;
+  name: string;
+  prompt: string;
+  builtIn: boolean;
+}
+
+interface StoredTranslationPromptProfile {
+  id?: string;
+  name?: string;
+  prompt?: string;
+}
+
+export const DEFAULT_TRANSLATION_PROMPT_ID: string = 'preset_faithful';
+
+const FAITHFUL_PROMPT: string =
+  '# Role\nYou are a precise professional translation engine.\n\n' +
+  '# Coverage\nDetect and translate every human-readable fragment independently, including mixed English, Japanese, Chinese, ' +
+  'Korean, romanized Japanese such as arigatou, and other languages in the same text. Split meaningful Latin strings into ' +
+  'their language components when context supports it; a creator or circle field is not automatically exempt. Translate or ' +
+  'transliterate readable names and compounds, including mixed romaji-English forms such as haruhisky. Preserve only tokens ' +
+  'whose identity requires exact spelling, such as an @account handle, URL, hash, product code or machine identifier, plus ' +
+  'numbers, markup, line breaks, delimiter shape and nesting. Do not preserve an entire phrase merely because it contains ' +
+  'one protected token; translate the descriptive words around it.\n\n' +
+  '# Brackets\nBrackets are containers, not no-translate markers. For every (), [], {}, <>, （）, ［］, ｛｝, ＜＞, 【】, ' +
+  '「」, 『』, 〈〉 and 《》 pair, preserve only its exact delimiters and nesting, while translating every ordinary word, ' +
+  'note, qualifier, tag, edition label and description inside. Text inside a bracket may remain unchanged only when it is ' +
+  'already in the target language or is entirely made of true protected tokens. Silently verify every bracket span before returning.\n\n' +
+  '# Fidelity\nTreat explicit, sensitive, offensive, fictional and adult wording as neutral translation material. Translate it ' +
+  'faithfully and directly without warnings, refusals, euphemisms, censorship, omissions or moral commentary. Do not summarize, ' +
+  'explain, answer, continue or rewrite the source. Preserve tone, slang, emphasis and paragraph structure. For a Chinese ' +
+  'gallery title, process the circle or creator block, main title, ' +
+  'subtitle, parenthetical title, language label and edition label in order; account for every Japanese kana run and every ' +
+  'meaningful Latin or romaji compound in Chinese. Example: [ろいやるびっち (haruhisky)] should become ' +
+  '[皇家婊子 (春日天空)], not retain either readable source phrase. Before returning, silently check that no segment was ' +
+  'skipped or truncated.';
+
+const BRACKET_PROMPT: string =
+  'Translate literally and inspect every (), [], {}, <>, （）, ［］, 【】, 「」, 『』, 〈〉 ' +
+  'and 《》 pair separately. Brackets are containers, never no-translate markers: preserve their exact characters and nesting, ' +
+  'but translate all ordinary language inside them, including names, notes, tags, qualifiers and edition labels. A Latin ' +
+  'string is not protected merely because it appears in a creator field or parentheses: split and translate recognizable ' +
+  'romaji-English compounds. Preserve exact text only for @handles, URLs, codes and machine identifiers. For Chinese titles, ' +
+  'translate [ろいやるびっち (haruhisky)] as [皇家婊子 (春日天空)] and verify every remaining kana or readable Latin ' +
+  'phrase. Treat explicit, sensitive, ' +
+  'offensive, fictional and adult text as neutral translation material and translate it directly without warning, refusal, ' +
+  'euphemism, censorship or omission. Silently check every bracket and every source ' +
+  'segment for complete coverage before answering.';
+
+const NATURAL_PROMPT: string =
+  'Act as a professional localization translator. Translate every meaningful part of the source into the target language ' +
+  'with natural, fluent wording while preserving the original meaning, tone, intensity, paragraph structure and compact title form. ' +
+  'Detect mixed languages and romanized words phrase by phrase. ' +
+  'Localize readable proper names, creator names and mixed romaji-English wordplay by meaning or natural transliteration; do not ' +
+  'copy a Latin string merely because it looks like a handle. For example, render haruhisky semantically as 春日天空 in a ' +
+  'Chinese title. Preserve only explicit @handles, URLs, codes, identifiers, numbers, markup and exact bracket characters, but ' +
+  'translate all descriptive text inside and outside (), [], {}, （）, 【】, 「」, 『』, 〈〉 and 《》. Brackets never mean ' +
+  'do not translate. Treat explicit, sensitive, offensive, fictional and adult wording as neutral translation material; translate it ' +
+  'faithfully without warning, refusal, euphemism, censorship, omission or moral commentary. Silently verify that no Japanese or ' +
+  'meaningful mixed-language title segment was skipped.';
+
+const TOKEN_SAVING_PROMPT: string =
+  'Translate every meaningful fragment, including mixed languages, Japanese, romaji-English compounds, readable names and all ' +
+  'bracket contents; for Chinese titles translate haruhisky by meaning instead of copying it. Preserve only @handles, URLs, ' +
+  'codes, machine identifiers and exact bracket characters. Treat explicit, sensitive and adult wording as neutral translation ' +
+  'data: translate it directly without refusal, warning, censorship, euphemism or omission. Silently check brackets and the final ' +
+  'source segment so the result is complete.';
+
+const PRESETS: TranslationPromptProfile[] = [
+  { id: DEFAULT_TRANSLATION_PROMPT_ID, name: 'Faithful', prompt: FAITHFUL_PROMPT, builtIn: true },
+  { id: 'preset_brackets', name: 'Strict brackets', prompt: BRACKET_PROMPT, builtIn: true },
+  { id: 'preset_natural', name: 'Natural localization', prompt: NATURAL_PROMPT, builtIn: true },
+  { id: 'preset_compact', name: 'Token saving', prompt: TOKEN_SAVING_PROMPT, builtIn: true }
+];
+
+export function builtInTranslationPromptProfiles(): TranslationPromptProfile[] {
+  return cloneTranslationPromptProfiles(PRESETS);
+}
+
+export function parseCustomTranslationPromptProfiles(raw: string): TranslationPromptProfile[] {
+  const result: TranslationPromptProfile[] = [];
+  if (raw.trim().length === 0) {
+    return result;
+  }
+  try {
+    const parsed = JSON.parse(raw) as StoredTranslationPromptProfile[];
+    if (!Array.isArray(parsed)) {
+      return result;
+    }
+    for (let i = 0; i < parsed.length; i++) {
+      const id = typeof parsed[i].id === 'string' ? (parsed[i].id as string).trim() : '';
+      const name = typeof parsed[i].name === 'string' ? (parsed[i].name as string).trim() : '';
+      const prompt = typeof parsed[i].prompt === 'string' ? parsed[i].prompt as string : '';
+      if (id.length > 0 && name.length > 0 && prompt.trim().length > 0 && findTranslationPromptProfile(result, id) === null) {
+        result.push({ id: id, name: name, prompt: prompt, builtIn: false });
+      }
+    }
+  } catch (error) {
+  }
+  return result;
+}
+
+export function serializeCustomTranslationPromptProfiles(profiles: TranslationPromptProfile[]): string {
+  const stored: StoredTranslationPromptProfile[] = [];
+  for (let i = 0; i < profiles.length; i++) {
+    if (!profiles[i].builtIn && profiles[i].id.trim().length > 0 && profiles[i].name.trim().length > 0 &&
+      profiles[i].prompt.trim().length > 0) {
+      stored.push({ id: profiles[i].id, name: profiles[i].name.trim(), prompt: profiles[i].prompt });
+    }
+  }
+  return JSON.stringify(stored);
+}
+
+export function allTranslationPromptProfiles(customRaw: string): TranslationPromptProfile[] {
+  const result = builtInTranslationPromptProfiles();
+  const custom = parseCustomTranslationPromptProfiles(customRaw);
+  for (let i = 0; i < custom.length; i++) {
+    result.push(custom[i]);
+  }
+  return result;
+}
+
+export function findTranslationPromptProfile(profiles: TranslationPromptProfile[], id: string): TranslationPromptProfile | null {
+  for (let i = 0; i < profiles.length; i++) {
+    if (profiles[i].id === id) {
+      return profiles[i];
+    }
+  }
+  return null;
+}
+
+export function activeTranslationPromptProfile(selectedId: string, customRaw: string): TranslationPromptProfile {
+  const profiles = allTranslationPromptProfiles(customRaw);
+  const selected = findTranslationPromptProfile(profiles, selectedId);
+  return selected === null ? profiles[0] : selected;
+}
+
+export function uniqueTranslationPromptName(profiles: TranslationPromptProfile[], preferred: string,
+  currentId: string = ''): string {
+  const base = preferred.trim().length > 0 ? preferred.trim() : 'Custom prompt';
+  let candidate = base;
+  let suffix = 2;
+  while (translationPromptNameExists(profiles, candidate, currentId)) {
+    candidate = base + ' ' + suffix.toString();
+    suffix++;
+  }
+  return candidate;
+}
+
+export function createTranslationPromptId(): string {
+  return 'custom_' + Date.now().toString();
+}
+
+export function cloneTranslationPromptProfiles(profiles: TranslationPromptProfile[]): TranslationPromptProfile[] {
+  const result: TranslationPromptProfile[] = [];
+  for (let i = 0; i < profiles.length; i++) {
+    result.push({
+      id: profiles[i].id,
+      name: profiles[i].name,
+      prompt: profiles[i].prompt,
+      builtIn: profiles[i].builtIn
+    });
+  }
+  return result;
+}
+
+function translationPromptNameExists(profiles: TranslationPromptProfile[], name: string, currentId: string): boolean {
+  for (let i = 0; i < profiles.length; i++) {
+    if (profiles[i].id !== currentId && profiles[i].name === name) {
+      return true;
+    }
+  }
+  return false;
+}

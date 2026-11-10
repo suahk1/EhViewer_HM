@@ -1,0 +1,56 @@
+// 构建配置模板。
+// 真实的 build-profile.json5 里有本机绝对路径和签名口令指纹，不放进仓库。
+// 用法：复制本文件为 build-profile.json5，用 DevEco Studio 的
+//   File → Project Structure → Signing Configs 自动生成签名，
+//   或手动填入自己的证书路径与口令。
+{
+  "app": {
+    "products": [
+      {
+        "name": "default",
+        "signingConfig": "default",
+        "compileSdkVersion": "26.0.0",
+        "compatibleSdkVersion": "6.0.0(20)",
+        "runtimeOS": "HarmonyOS",
+        "targetSdkVersion": "26.0.0"
+      }
+    ],
+    "buildModeSet": [
+      {
+        "name": "debug"
+      },
+      {
+        "name": "release"
+      }
+    ],
+    "signingConfigs": [
+      {
+        "name": "default",
+        "type": "HarmonyOS",
+        "material": {
+          "certpath": "<你的用户目录>\.ohos\config\default_<项目名>_xxx.cer",
+          "keyAlias": "debugKey",
+          "keyPassword": "<DevEco 生成，照抄 .p12 的密钥口令>",
+          "profile": "<你的用户目录>\.ohos\config\default_<项目名>_xxx.p7b",
+          "signAlg": "SHA256withECDSA",
+          "storeFile": "<你的用户目录>\.ohos\config\default_<项目名>_xxx.p12",
+          "storePassword": "<DevEco 生成，照抄 .p12 的库口令>"
+        }
+      }
+    ]
+  },
+  "modules": [
+    {
+      "name": "entry",
+      "srcPath": "./entry",
+      "targets": [
+        {
+          "name": "default",
+          "applyToProducts": [
+            "default"
+          ]
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,2622 @@
+import { bundleManager, common } from '@kit.AbilityKit';
+import { fileIo as fs, fileUri } from '@kit.CoreFileKit';
+import { GalleryCategory, GalleryComment, GalleryDetail, GalleryInfo, GalleryPage, GalleryPreview, GalleryRoute, GallerySite, GalleryTagGroup, GalleryTagInfo, TopListBucket, TopListDetail, TopListInfo, TopListItem, TopListKind } from '../model/GalleryModels';
+import { ehDownloadFileStore } from '../services/EhDownloadFileStore';
+import { DownloadInfo, DownloadLabel, DownloadState, ehDownloadStore } from '../services/EhDownloadStore';
+import { sortDownloadItems } from '../services/DownloadSortSupport';
+import { ehHistoryStore, ReadingProgressBackupInfo } from '../services/EhHistoryStore';
+import { BrowsePositionsBackupInfo } from '../services/EhBrowsePositionStore';
+import {
+  DEFAULT_DOWNLOAD_LABEL_ASK,
+  DEFAULT_DOWNLOAD_LABEL_SETTING_KEY,
+  FLOATING_ACTION_HOLDING_HAND_SETTING_KEY,
+  HISTORY_INFO_SIZE_KEY,
+  MULTI_DEVICE_CONTINUATION_SETTING_KEY,
+  appSettingsStore,
+  historyInfoSizeLimitFromValue,
+  historyInfoSizeOptions,
+  normalizeHistoryInfoSizeOption,
+  SettingEntry,
+} from '../services/AppSettingsStore';
+import { GalleryListLoadResult, NetworkDiagnosticResult } from '../services/EhHttpClient';
+import { EhUrl, ListMode } from '../services/EhUrl';
+import {
+  ImageDownloadOptions,
+  IMAGE_DOWNLOAD_PRIORITY_BACKGROUND,
+  IMAGE_DOWNLOAD_PRIORITY_READER,
+  readerImageCache,
+} from '../services/ReaderImageCache';
+import { previewThumbnailCache } from '../services/PreviewThumbnailCache';
+import { galleryThumbnailDecodeCache, GalleryThumbnailLease } from '../services/GalleryThumbnailDecodeCache';
+import { readerPageSourceGuard } from '../services/ReaderPageSourceGuard';
+import { FilterRule, ehFilterStore } from '../services/EhFilterStore';
+import { CommentBlacklistBackupEntry } from '../services/EhCommentBlacklistStore';
+import { readerSuperResolutionEngineOptions } from '../services/ReaderSuperResolutionSupport';
+import { LocalFavoriteBackupInfo } from '../services/EhLocalFavoritesStore';
+import { SearchBookmarkBackupInfo } from '../services/EhBookmarkStore';
+import {
+  REMOTE_STORAGE_PURPOSE_DOWNLOADS,
+  RemoteStorageProfile,
+  remoteStorageProfileStore
+} from '../services/RemoteStorageProfiles';
+import { APP_AUTHOR_NAME, EH_RELEASE_TAG } from '../services/AppBuildInfo';
+import { normalizeGalleryLanguageCode } from '../services/GalleryLanguageSupport';
+import {
+  findSavedTranslationApi,
+  parseSavedTranslationApis,
+} from '../services/TranslationSupport';
+import { decodeHtmlEntities } from './HtmlEntitySupport';
+import {
+  currentDarkModeThemeName as themeCurrentDarkModeThemeName,
+  currentDisplayMode as themeCurrentDisplayMode,
+  currentThemeName as themeCurrentThemeName,
+  isBlackTheme as themeIsBlackTheme,
+  isDarkTheme as themeIsDarkTheme,
+  themeDividerColor as paletteDividerColor,
+  themeDownloadStateActiveColor as paletteDownloadStateActiveColor,
+  themeDownloadStateDoneColor as paletteDownloadStateDoneColor,
+  themeDownloadStateFailedColor as paletteDownloadStateFailedColor,
+  themeDownloadStateIdleColor as paletteDownloadStateIdleColor,
+  themeDownloadStateWaitColor as paletteDownloadStateWaitColor,
+  themeFieldBackground as paletteFieldBackground,
+  themeMutedText as paletteMutedText,
+  themePageBackground as palettePageBackground,
+  themePlaceholderColor as palettePlaceholderColor,
+  themePrimaryColor as palettePrimaryColor,
+  themePrimaryText as palettePrimaryText,
+  themeSecondaryText as paletteSecondaryText,
+  themeSelectedBackground as paletteSelectedBackground,
+  themeSelectedBackgroundLight as paletteSelectedBackgroundLight,
+  themeSurface as paletteSurface,
+  themeSurfaceVariant as paletteSurfaceVariant,
+  themeTertiaryText as paletteTertiaryText,
+} from './AppPalette';
+import {
+  notifyHistoryReadChanged,
+  shouldShowTagTranslations,
+  uiText,
+} from './AppStrings';
+export { sortDownloadItems } from '../services/DownloadSortSupport';
+export {
+  LANGUAGE_REVISION_KEY,
+  THEME_REVISION_KEY,
+  HISTORY_READ_REVISION_KEY,
+  GALLERY_TITLE_REVISION_KEY,
+  notifyLanguageChanged,
+  notifyThemeChanged,
+  notifyHistoryReadChanged,
+  notifyGalleryTitleChanged,
+  shouldUseChineseUi,
+  shouldShowTagTranslations,
+  dockLabel,
+  uiText,
+  uiValue,
+  plainTextFromHtml,
+  uiStatusText,
+  uiPageText,
+  zhText,
+} from './AppStrings';
+export interface EhBackupBundle {
+  version: number;
+  exportedAt: string;
+  cookies: string;
+  settings: SettingEntry[];
+  history: GalleryInfo[];
+  readingProgress?: ReadingProgressBackupInfo[];
+  searchHistory?: string[];
+  browsePositions?: BrowsePositionsBackupInfo;
+  downloadItems: DownloadInfo[];
+  downloadLabels: DownloadLabel[];
+  filterRules: FilterRule[];
+  localFavorites?: LocalFavoriteBackupInfo[];
+  bookmarks?: SearchBookmarkBackupInfo[];
+  commentBlacklist?: CommentBlacklistBackupEntry[];
+  remoteStorage?: RemoteStorageProfile[];
+}
+
+export const IDENTITY_AUTH_LOCKED_KEY: string = 'ehviewer_identity_auth_locked';
+export const IDENTITY_AUTH_OFF: string = 'Off';
+export const IDENTITY_AUTH_FINGERPRINT_FIRST: string = 'Fingerprint first';
+export const IDENTITY_AUTH_FACE_FIRST: string = 'Face first';
+export const IDENTITY_AUTH_PASSWORD_FIRST: string = 'Password first';
+
+export interface DrawerItem {
+  route: GalleryRoute;
+  title: string;
+  icon: string;
+  subtitle: string;
+}
+
+export interface SettingsHeaderItem {
+  panel: SettingsPanel;
+  title: string;
+  icon: string;
+  summary: string;
+}
+
+interface ThumbnailReadyDelivery {
+  path: string;
+  onReady: (path: string) => void;
+}
+
+const THUMBNAIL_READY_BATCH_SIZE: number = 1;
+const THUMBNAIL_READY_BATCH_DELAY_MS: number = 48;
+const THUMBNAIL_RETRY_LIMIT: number = 2;
+const THUMBNAIL_READY_QUEUE: ThumbnailReadyDelivery[] = [];
+let thumbnailReadyScheduled: boolean = false;
+
+export interface SettingsRowItem {
+  key?: string;
+  title: string;
+  summary: string;
+  value: string;
+  type: string;
+  options?: string[];
+  optionDescriptions?: string[];
+}
+
+export enum SessionMode {
+  Password = 'password',
+  Cookie = 'cookie',
+  Web = 'web'
+}
+
+export enum SettingsPanel {
+  Main = 'main',
+  Eh = 'eh',
+  Ui = 'ui',
+  Read = 'read',
+  Download = 'download',
+  Privacy = 'privacy',
+  Translation = 'translation',
+  TranslationPrompt = 'translation_prompt',
+  ReaderPresets = 'reader_presets',
+  Network = 'network',
+  Advanced = 'advanced',
+  WifiTransfer = 'wifi_transfer',
+  RemoteStorage = 'remote_storage',
+  About = 'about',
+  Session = 'session',
+  WebView = 'webview',
+  Filter = 'filter',
+  CommentBlacklist = 'comment_blacklist',
+  MyTags = 'mytags'
+}
+
+// 仅用于自动化测试：通过 aa start --ps debug_panel=<name> 直达指定设置面板。
+export const DEBUG_SETTINGS_PANEL_KEY: string = 'debug.settingsPanel';
+
+export function settingsPanelFromName(name: string): SettingsPanel | undefined {
+  switch (name) {
+    case 'main': return SettingsPanel.Main;
+    case 'eh': return SettingsPanel.Eh;
+    case 'ui': return SettingsPanel.Ui;
+    case 'read': return SettingsPanel.Read;
+    case 'download': return SettingsPanel.Download;
+    case 'privacy': return SettingsPanel.Privacy;
+    case 'translation': return SettingsPanel.Translation;
+    case 'network': return SettingsPanel.Network;
+    case 'advanced': return SettingsPanel.Advanced;
+    case 'about': return SettingsPanel.About;
+    case 'remote_storage': return SettingsPanel.RemoteStorage;
+    case 'reader_presets': return SettingsPanel.ReaderPresets;
+    default: return undefined;
+  }
+}
+
+export const DRAWER_ITEMS: DrawerItem[] = [
+  { route: GalleryRoute.Home, title: 'Homepage', icon: 'H', subtitle: 'Gallery list and search' },
+  { route: GalleryRoute.Subscription, title: 'Subscription', icon: 'S', subtitle: 'Watched tags' },
+  { route: GalleryRoute.WhatsHot, title: 'What\'s Hot', icon: 'F', subtitle: 'Popular galleries' },
+  { route: GalleryRoute.TopLists, title: 'Top Lists', icon: 'T', subtitle: 'Ranking tables' },
+  { route: GalleryRoute.Favorites, title: 'Favourite', icon: 'L', subtitle: 'Cloud and local favorites' },
+  { route: GalleryRoute.History, title: 'History', icon: 'R', subtitle: 'Recent reading' },
+  { route: GalleryRoute.Downloads, title: 'Downloads', icon: 'D', subtitle: 'Queue and labels' },
+  { route: GalleryRoute.Settings, title: 'Settings', icon: 'G', subtitle: 'Preferences' }
+];
+
+export const SETTINGS_HEADERS: SettingsHeaderItem[] = [
+  { panel: SettingsPanel.Eh, title: 'EH', icon: 'E', summary: 'Account, site, filters and comments' },
+  { panel: SettingsPanel.Ui, title: 'Interface', icon: 'U', summary: 'Theme, language and gallery list display' },
+  { panel: SettingsPanel.Read, title: 'Read', icon: 'R', summary: 'Reader direction, scaling and screen behavior' },
+  { panel: SettingsPanel.Download, title: 'Download', icon: 'D', summary: 'Location, threads, preload and cleanup' },
+  { panel: SettingsPanel.Translation, title: 'Translation', icon: 'T', summary: 'Title and comment translation providers' },
+  { panel: SettingsPanel.Privacy, title: 'Privacy and data', icon: 'P', summary: 'Lock, backup, cache and cleanup' },
+  { panel: SettingsPanel.Network, title: 'Network', icon: 'N', summary: 'Proxy, DNS, hosts and diagnostics' },
+  { panel: SettingsPanel.Advanced, title: 'Advanced', icon: 'A', summary: 'Smart grip, logs and debug output' },
+  { panel: SettingsPanel.About, title: 'About', icon: 'I', summary: 'Version and license' }
+];
+
+// 最近一次真正执行过的搜索查询：搜索结果不是路由，组件局部状态会在重建时丢失，
+// 这里存一份全局的，供返回时还原（B-03）。
+export interface LastSearchQuery {
+  keyword: string;
+  mode: ListMode;
+  category: number;
+}
+let lastSearchQuery: LastSearchQuery = { keyword: '', mode: ListMode.Normal, category: 0 };
+
+export function rememberSearchQuery(keyword: string, mode: ListMode, category: number): void {
+  if (keyword.trim().length === 0) {
+    return;
+  }
+  lastSearchQuery = { keyword: keyword, mode: mode, category: category };
+}
+
+export function getLastSearchQuery(): LastSearchQuery {
+  return lastSearchQuery;
+}
+
+let activeBackHandler: (() => boolean) | null = null;
+let readerActiveBackHandler: (() => boolean) | null = null;
+const ACTIVE_BACK_HANDLERS: Array<() => boolean> = [];
+const DETAIL_BACK_HANDLERS: Array<() => boolean> = [];
+
+export function setActiveBackHandler(handler: (() => boolean) | null): void {
+  activeBackHandler = handler;
+}
+
+export function pushActiveBackHandler(handler: () => boolean): () => void {
+  ACTIVE_BACK_HANDLERS.push(handler);
+  return () => {
+    for (let i = ACTIVE_BACK_HANDLERS.length - 1; i >= 0; i--) {
+      if (ACTIVE_BACK_HANDLERS[i] === handler) {
+        ACTIVE_BACK_HANDLERS.splice(i, 1);
+        return;
+      }
+    }
+  };
+}
+
+export function runActiveBackHandler(): boolean {
+  const handlers = ACTIVE_BACK_HANDLERS.slice();
+  for (let i = handlers.length - 1; i >= 0; i--) {
+    if (handlers[i]()) {
+      return true;
+    }
+  }
+  // 栈里的 handler 都不处理时，继续给单槽 handler 一次机会。
+  // 原来这里直接 return false，而主页列表、画廊列表一进页面就压栈且常驻不弹，
+  // 于是所有用 setActiveBackHandler 注册的页面（设置、登录、详情等）返回键永久失效，
+  // 表现为「第一次按没反应、第二次直接回主页」。
+  return activeBackHandler !== null && activeBackHandler();
+}
+
+export function setReaderActiveBackHandler(handler: (() => boolean) | null): void {
+  readerActiveBackHandler = handler;
+}
+
+export function runReaderActiveBackHandler(): boolean {
+  return readerActiveBackHandler !== null && readerActiveBackHandler();
+}
+
+export function pushDetailBackHandler(handler: () => boolean): () => void {
+  DETAIL_BACK_HANDLERS.push(handler);
+  return () => {
+    for (let i = DETAIL_BACK_HANDLERS.length - 1; i >= 0; i--) {
+      if (DETAIL_BACK_HANDLERS[i] === handler) {
+        DETAIL_BACK_HANDLERS.splice(i, 1);
+        return;
+      }
+    }
+  };
+}
+
+export function runDetailBackHandler(): boolean {
+  for (let i = DETAIL_BACK_HANDLERS.length - 1; i >= 0; i--) {
+    if (DETAIL_BACK_HANDLERS[i]()) {
+      return true;
+    }
+  }
+  return false;
+}
+// 切一级页面时递增。列表场景收到后必须把详情/阅读器/弹层等临时层清掉，
+// 否则切回来还停在上一本的详情里（用户看到的「在两个图册之间来回切」）。
+export const ROUTE_RESET_REVISION_KEY: string = 'routeResetRevision';
+export const STATUS_BAR_HEIGHT_KEY: string = 'statusBarHeight';
+export const TOP_AVOID_HEIGHT_KEY: string = 'topAvoidHeight';
+export const BOTTOM_AVOID_HEIGHT_KEY: string = 'bottomAvoidHeight';
+
+// 设置页要能直接看到当前安装包的版本号，否则每次改了什么都得靠记忆判断。
+export function appVersionName(): string {
+  try {
+    const info = bundleManager.getBundleInfoForSelfSync(bundleManager.BundleFlag.GET_BUNDLE_INFO_DEFAULT);
+    return info.versionName;
+  } catch (error) {
+    return '';
+  }
+}
+
+export function createEmptyGallery(): GalleryInfo {
+  return {
+    gid: 0,
+    token: '',
+    title: '',
+    category: GalleryCategory.Unknown,
+    rating: -1,
+    rated: false,
+    pages: 0,
+    thumbWidth: 0,
+    thumbHeight: 0,
+    favoriteSlot: -2
+  };
+}
+
+export function createEmptyDownloadInfo(): DownloadInfo {
+  return {
+    gid: 0,
+    token: '',
+    title: '',
+    category: GalleryCategory.Unknown,
+    rating: -1,
+    rated: false,
+    pages: 0,
+    thumbWidth: 0,
+    thumbHeight: 0,
+    favoriteSlot: -2,
+    state: DownloadState.None,
+    legacy: 0,
+    time: 0,
+    label: '',
+    archiveUri: '',
+    speed: 0,
+    remaining: 0,
+    finished: 0,
+    downloaded: 0,
+    total: 0,
+    fileSize: -1
+  };
+}
+
+export function createDetailFromGallery(gallery: GalleryInfo): GalleryDetail {
+  const detail = createEmptyDetail();
+  detail.gid = gallery.gid;
+  detail.token = gallery.token;
+  detail.title = gallery.title;
+  detail.titleJpn = gallery.titleJpn;
+  detail.thumb = gallery.thumb;
+  detail.category = gallery.category;
+  detail.posted = gallery.posted;
+  detail.uploader = gallery.uploader;
+  detail.rating = gallery.rating;
+  detail.rated = gallery.rated;
+  detail.pages = gallery.pages;
+  detail.thumbWidth = gallery.thumbWidth;
+  detail.thumbHeight = gallery.thumbHeight;
+  detail.favoriteSlot = gallery.favoriteSlot;
+  detail.favoriteName = gallery.favoriteName;
+  detail.simpleLanguage = gallery.simpleLanguage;
+  detail.simpleTags = cloneStringArray(gallery.simpleTags);
+  detail.tagList = cloneStringArray(gallery.tagList);
+  detail.detailLanguage = gallery.detailLanguage;
+  detail.detailTags = gallery.detailTags === undefined ? undefined : cloneGalleryTagGroups(gallery.detailTags);
+  if (gallery.detailLanguage !== undefined && gallery.detailLanguage.length > 0) {
+    detail.language = gallery.detailLanguage;
+  }
+  if (gallery.detailTags !== undefined && gallery.detailTags.length > 0) {
+    detail.tags = cloneGalleryTagGroups(gallery.detailTags);
+  }
+  return detail;
+}
+
+export function createEmptyDetail(): GalleryDetail {
+  return {
+    gid: 0,
+    token: '',
+    title: '',
+    category: GalleryCategory.Unknown,
+    rating: -1,
+    rated: false,
+    pages: 0,
+    thumbWidth: 0,
+    thumbHeight: 0,
+    favoriteSlot: -2,
+    apiUid: -1,
+    apiKey: '',
+    tags: [],
+    comments: [],
+    torrentCount: 0,
+    torrentUrl: '',
+    archiveUrl: '',
+    parent: '',
+    visible: '',
+    language: '',
+    size: '',
+    favoriteCount: 0,
+    isFavorited: false,
+    ratingCount: 0,
+    previewPages: 0,
+    previewSet: []
+  };
+}
+
+export function createEmptyPreview(): GalleryPreview {
+  return {
+    index: 0,
+    pageUrl: '',
+    imageUrl: '',
+    width: 0,
+    height: 0,
+    xOffset: 0,
+    yOffset: 0
+  };
+}
+
+export function createEmptyPage(): GalleryPage {
+  return {
+    pageUrl: '',
+    imageUrl: '',
+    skipHathKey: '',
+    originImageUrl: '',
+    showKey: ''
+  };
+}
+
+export function createEmptyTopListDetail(): TopListDetail {
+  return {
+    title: '',
+    lists: []
+  };
+}
+
+export function createEmptyTopListInfo(): TopListInfo {
+  return {
+    kind: TopListKind.Gallery,
+    title: 'Gallery Toplists',
+    buckets: []
+  };
+}
+
+export function createEmptyTopListBucket(): TopListBucket {
+  return {
+    title: '',
+    follow: '',
+    items: []
+  };
+}
+
+export function createEmptyTopListItem(): TopListItem {
+  return {
+    href: '',
+    gid: '',
+    token: '',
+    tag: '',
+    value: ''
+  };
+}
+
+function cloneStringArray(values: string[] | undefined): string[] | undefined {
+  if (values === undefined) {
+    return undefined;
+  }
+  const result: string[] = [];
+  for (let i = 0; i < values.length; i++) {
+    result.push(values[i]);
+  }
+  return result;
+}
+
+function cloneRequiredStringArray(values: string[]): string[] {
+  const result: string[] = [];
+  for (let i = 0; i < values.length; i++) {
+    result.push(values[i]);
+  }
+  return result;
+}
+
+function cloneOptionalGalleryTagGroups(groups: GalleryTagGroup[] | undefined): GalleryTagGroup[] | undefined {
+  if (groups === undefined) {
+    return undefined;
+  }
+  const result: GalleryTagGroup[] = [];
+  for (let i = 0; i < groups.length; i++) {
+    result.push({
+      namespace: groups[i].namespace,
+      tags: cloneRequiredStringArray(groups[i].tags)
+    });
+  }
+  return result;
+}
+
+function findLanguageInTagGroups(groups: GalleryTagGroup[] | undefined): string {
+  if (groups === undefined) {
+    return '';
+  }
+  for (let i = 0; i < groups.length; i++) {
+    if (groups[i].namespace.toLowerCase() === 'language' && groups[i].tags.length > 0) {
+      return groups[i].tags[0];
+    }
+  }
+  return '';
+}
+
+function findLanguageInTags(tags: string[] | undefined): string {
+  if (tags === undefined) {
+    return '';
+  }
+  for (let i = 0; i < tags.length; i++) {
+    const tag = tags[i];
+    const lower = tag.toLowerCase();
+    if (lower.indexOf('language:') === 0 && tag.length > 9) {
+      return tag.substring(9);
+    }
+  }
+  return '';
+}
+
+export function gallerySimpleLanguage(gallery: GalleryInfo): string {
+  if (gallery.simpleLanguage !== undefined && gallery.simpleLanguage.length > 0) {
+    return normalizedGalleryLanguageDisplay(gallery.simpleLanguage);
+  }
+  if (gallery.detailLanguage !== undefined && gallery.detailLanguage.length > 0) {
+    return normalizedGalleryLanguageDisplay(gallery.detailLanguage);
+  }
+  const groupLanguage = findLanguageInTagGroups(gallery.detailTags);
+  if (groupLanguage.length > 0) {
+    return normalizedGalleryLanguageDisplay(groupLanguage);
+  }
+  const listLanguage = findLanguageInTags(gallery.tagList);
+  if (listLanguage.length > 0) {
+    return normalizedGalleryLanguageDisplay(listLanguage);
+  }
+  return normalizedGalleryLanguageDisplay(findLanguageInTags(gallery.simpleTags));
+}
+
+function normalizedGalleryLanguageDisplay(value: string): string {
+  const code = normalizeGalleryLanguageCode(value);
+  return code.length > 0 ? code : value;
+}
+
+function galleryDetailLanguage(gallery: GalleryInfo): string | undefined {
+  const detail = gallery as GalleryDetail;
+  if (detail.language !== undefined && detail.language.length > 0) {
+    return detail.language;
+  }
+  if (gallery.detailLanguage !== undefined && gallery.detailLanguage.length > 0) {
+    return gallery.detailLanguage;
+  }
+  const language = gallerySimpleLanguage(gallery);
+  return language.length > 0 ? language : undefined;
+}
+
+function galleryDetailTags(gallery: GalleryInfo): GalleryTagGroup[] | undefined {
+  const detail = gallery as GalleryDetail;
+  if (detail.tags !== undefined && detail.tags.length > 0) {
+    return cloneOptionalGalleryTagGroups(detail.tags);
+  }
+  return cloneOptionalGalleryTagGroups(gallery.detailTags);
+}
+
+export function cloneGalleryInfo(gallery: GalleryInfo): GalleryInfo {
+  const language = gallerySimpleLanguage(gallery);
+  return {
+    gid: gallery.gid,
+    token: gallery.token,
+    title: gallery.title,
+    titleJpn: gallery.titleJpn,
+    thumb: gallery.thumb,
+    category: gallery.category,
+    posted: gallery.posted,
+    uploader: gallery.uploader,
+    rating: gallery.rating,
+    rated: gallery.rated,
+    simpleLanguage: language.length > 0 ? language : undefined,
+    simpleTags: cloneStringArray(gallery.simpleTags),
+    pages: gallery.pages,
+    thumbWidth: gallery.thumbWidth,
+    thumbHeight: gallery.thumbHeight,
+    favoriteSlot: gallery.favoriteSlot,
+    favoriteName: gallery.favoriteName,
+    tagList: cloneStringArray(gallery.tagList),
+    detailTags: galleryDetailTags(gallery),
+    detailLanguage: galleryDetailLanguage(gallery),
+    historyTime: gallery.historyTime
+  };
+}
+
+export function cloneGalleryInfos(galleries: GalleryInfo[]): GalleryInfo[] {
+  const result: GalleryInfo[] = [];
+  for (let i = 0; i < galleries.length; i++) {
+    result.push(cloneGalleryInfo(galleries[i]));
+  }
+  return result;
+}
+
+export function padTwo(n: number): string {
+  return n < 10 ? '0' + n.toString() : n.toString();
+}
+
+export function applyGalleryFilters(galleries: GalleryInfo[]): GalleryInfo[] {
+  const filtered: GalleryInfo[] = [];
+  for (let i = 0; i < galleries.length; i++) {
+    if (!ehFilterStore.isFiltered(galleries[i])) {
+      filtered.push(galleries[i]);
+    }
+  }
+  return filtered;
+}
+
+function cloneGalleryTagGroups(groups: GalleryTagGroup[]): GalleryTagGroup[] {
+  const result: GalleryTagGroup[] = [];
+  for (let i = 0; i < groups.length; i++) {
+    result.push({
+      namespace: groups[i].namespace,
+      tags: cloneRequiredStringArray(groups[i].tags),
+      tagInfos: cloneGalleryTagInfos(groups[i].tagInfos)
+    });
+  }
+  return result;
+}
+
+function cloneGalleryTagInfos(infos: GalleryTagInfo[] | undefined): GalleryTagInfo[] | undefined {
+  if (infos === undefined) {
+    return undefined;
+  }
+  const result: GalleryTagInfo[] = [];
+  for (let i = 0; i < infos.length; i++) {
+    result.push({
+      id: infos[i].id,
+      namespace: infos[i].namespace,
+      tag: infos[i].tag,
+      fullTag: infos[i].fullTag,
+      voteUpEd: infos[i].voteUpEd,
+      voteDownEd: infos[i].voteDownEd
+    });
+  }
+  return result;
+}
+
+function cloneGalleryComments(comments: GalleryComment[]): GalleryComment[] {
+  const result: GalleryComment[] = [];
+  for (let i = 0; i < comments.length; i++) {
+    result.push({
+      id: comments[i].id,
+      user: comments[i].user,
+      posted: comments[i].posted,
+      content: comments[i].content,
+      score: comments[i].score,
+      voteUpAble: comments[i].voteUpAble,
+      voteUpEd: comments[i].voteUpEd,
+      voteDownAble: comments[i].voteDownAble,
+      voteDownEd: comments[i].voteDownEd,
+      voteState: comments[i].voteState
+    });
+  }
+  return result;
+}
+
+export function cloneGalleryPreviews(previews: GalleryPreview[]): GalleryPreview[] {
+  const result: GalleryPreview[] = [];
+  for (let i = 0; i < previews.length; i++) {
+    result.push({
+      index: previews[i].index,
+      pageUrl: previews[i].pageUrl,
+      imageUrl: previews[i].imageUrl,
+      width: previews[i].width,
+      height: previews[i].height,
+      xOffset: previews[i].xOffset,
+      yOffset: previews[i].yOffset
+    });
+  }
+  return result;
+}
+
+export function cloneGalleryDetail(detail: GalleryDetail): GalleryDetail {
+  const base = cloneGalleryInfo(detail);
+  return {
+    gid: base.gid,
+    token: base.token,
+    title: base.title,
+    titleJpn: base.titleJpn,
+    thumb: base.thumb,
+    category: base.category,
+    posted: base.posted,
+    uploader: base.uploader,
+    rating: base.rating,
+    rated: base.rated,
+    simpleLanguage: base.simpleLanguage,
+    simpleTags: base.simpleTags,
+    pages: base.pages,
+    thumbWidth: base.thumbWidth,
+    thumbHeight: base.thumbHeight,
+    favoriteSlot: base.favoriteSlot,
+    favoriteName: base.favoriteName,
+    tagList: base.tagList,
+    detailTags: cloneGalleryTagGroups(detail.tags),
+    detailLanguage: detail.language,
+    apiUid: detail.apiUid,
+    apiKey: detail.apiKey,
+    tags: cloneGalleryTagGroups(detail.tags),
+    comments: cloneGalleryComments(detail.comments),
+    torrentCount: detail.torrentCount,
+    torrentUrl: detail.torrentUrl,
+    archiveUrl: detail.archiveUrl,
+    parent: detail.parent,
+    visible: detail.visible,
+    language: detail.language,
+    size: detail.size,
+    favoriteCount: detail.favoriteCount,
+    isFavorited: detail.isFavorited,
+    ratingCount: detail.ratingCount,
+    previewPages: detail.previewPages,
+    previewSet: cloneGalleryPreviews(detail.previewSet)
+  };
+}
+
+export function cloneGalleryPage(page: GalleryPage): GalleryPage {
+  return {
+    pageUrl: page.pageUrl,
+    imageUrl: page.imageUrl,
+    skipHathKey: page.skipHathKey,
+    originImageUrl: page.originImageUrl,
+    showKey: page.showKey,
+    cachedImagePath: page.cachedImagePath,
+    cachedOriginImagePath: page.cachedOriginImagePath
+  };
+}
+
+export function createReaderLoadingPage(pageUrl: string): GalleryPage {
+  return {
+    pageUrl: pageUrl,
+    imageUrl: '',
+    skipHathKey: '',
+    originImageUrl: '',
+    showKey: ''
+  };
+}
+
+function cloneTopListItem(item: TopListItem): TopListItem {
+  return {
+    href: item.href,
+    gid: item.gid,
+    token: item.token,
+    tag: item.tag,
+    value: item.value
+  };
+}
+
+function cloneTopListBucket(bucket: TopListBucket): TopListBucket {
+  const items: TopListItem[] = [];
+  for (let i = 0; i < bucket.items.length; i++) {
+    items.push(cloneTopListItem(bucket.items[i]));
+  }
+  return {
+    title: bucket.title,
+    follow: bucket.follow,
+    items: items
+  };
+}
+
+function cloneTopListInfo(info: TopListInfo): TopListInfo {
+  const buckets: TopListBucket[] = [];
+  for (let i = 0; i < info.buckets.length; i++) {
+    buckets.push(cloneTopListBucket(info.buckets[i]));
+  }
+  return {
+    kind: info.kind,
+    title: info.title,
+    buckets: buckets
+  };
+}
+
+export function cloneTopListDetail(detail: TopListDetail): TopListDetail {
+  const lists: TopListInfo[] = [];
+  for (let i = 0; i < detail.lists.length; i++) {
+    lists.push(cloneTopListInfo(detail.lists[i]));
+  }
+  return {
+    title: detail.title,
+    lists: lists
+  };
+}
+
+export function getAbilityContext(): common.UIAbilityContext | undefined {
+  return AppStorage.get<common.UIAbilityContext>('abilityContext');
+}
+
+export function saveGalleryToHistory(gallery: GalleryInfo): void {
+  const limit = currentHistoryInfoSizeLimit();
+  const context = getAbilityContext();
+  if (context === undefined) {
+    ehHistoryStore.addGallery(gallery, limit);
+    return;
+  }
+  ehHistoryStore.ensureLoaded(context).then(() => {
+    ehHistoryStore.addGallery(gallery, limit);
+    ehHistoryStore.save(context).catch(() => {});
+  }).catch(() => {});
+}
+
+export function saveGalleryReadPosition(gid: number, pageIndex: number, gallery?: GalleryInfo): void {
+  const limit = currentHistoryInfoSizeLimit();
+  const context = getAbilityContext();
+  if (context === undefined) {
+    if (gallery !== undefined) {
+      ehHistoryStore.addGallery(gallery, limit);
+    }
+    ehHistoryStore.setReadPage(gid, pageIndex);
+    notifyHistoryReadChanged();
+    return;
+  }
+  ehHistoryStore.ensureLoaded(context).then(() => {
+    if (gallery !== undefined) {
+      ehHistoryStore.addGallery(gallery, limit);
+    }
+    ehHistoryStore.setReadPage(gid, pageIndex);
+    notifyHistoryReadChanged();
+    ehHistoryStore.save(context).catch(() => {});
+  }).catch(() => {});
+}
+
+export function currentHistoryInfoSizeLimit(): number {
+  return historyInfoSizeLimitFromValue(appSettingsStore.getValue(HISTORY_INFO_SIZE_KEY, '100'));
+}
+
+export function readerStartIndex(detail: GalleryDetail): number {
+  const total = detail.pages > 0 ? detail.pages : detail.previewSet.length;
+  if (total <= 0) {
+    return 0;
+  }
+  const saved = ehHistoryStore.getReadPage(detail.gid);
+  if (saved >= 0 && saved < total) {
+    return saved;
+  }
+  return 0;
+}
+
+export async function readerStartIndexAsync(detail: GalleryDetail): Promise<number> {
+  const context = getAbilityContext();
+  if (context !== undefined) {
+    await ehHistoryStore.ensureLoaded(context).catch(() => {});
+  }
+  return readerStartIndex(detail);
+}
+
+export function downloadButtonText(gid: number): string {
+  return ehDownloadStore.contains(gid) ? 'Queued' : 'Download';
+}
+
+export function defaultDownloadLabelChoice(): string {
+  const value = appSettingsStore.getValue(DEFAULT_DOWNLOAD_LABEL_SETTING_KEY, DEFAULT_DOWNLOAD_LABEL_ASK);
+  if (value === DEFAULT_DOWNLOAD_LABEL_ASK || value.length === 0 || ehDownloadStore.hasLabel(value)) {
+    return value;
+  }
+  return DEFAULT_DOWNLOAD_LABEL_ASK;
+}
+
+export function saveDefaultDownloadLabelChoice(value: string): void {
+  const normalized = value === DEFAULT_DOWNLOAD_LABEL_ASK ? value : value.trim();
+  if (normalized !== DEFAULT_DOWNLOAD_LABEL_ASK && normalized.length > 0 && !ehDownloadStore.hasLabel(normalized)) {
+    return;
+  }
+  appSettingsStore.setValue(DEFAULT_DOWNLOAD_LABEL_SETTING_KEY, normalized);
+  const context = getAbilityContext();
+  if (context !== undefined) {
+    appSettingsStore.save(context).catch(() => {});
+  }
+}
+
+export function toggleGalleryDownload(gallery: GalleryInfo, label: string = ''): boolean {
+  if (ehDownloadStore.contains(gallery.gid)) {
+    ehDownloadStore.removeGallery(gallery.gid);
+    saveDownloadsQuietly();
+    return false;
+  }
+
+  const item = ehDownloadStore.addGallery(gallery, label);
+  if (item !== null) {
+    ehDownloadStore.startGallery(item.gid);
+  }
+  saveDownloadsQuietly();
+  return true;
+}
+
+export function saveDownloadsQuietly(): void {
+  const context = getAbilityContext();
+  if (context === undefined) {
+    return;
+  }
+  ehDownloadStore.save(context).catch(() => {});
+}
+
+// 筛选分类：去掉本软件不会产生的死状态（空闲/更新中/无效），补上真正需要的
+// 「文件缺失」与来源分类（仅云端 / 云端已删 / 本地）。
+export const DOWNLOAD_STATUS_FILTER_OPTIONS: string[] = [
+  'Waiting', 'Downloading', 'Downloaded', 'Failed', 'Files missing', 'Cloud only', 'Cloud gone', 'Local'
+];
+
+export function filterDownloadItems(items: DownloadInfo[], query: string, statusFilters: string[], labelFilter: string,
+  sortMode: string, categoryFilter: string = 'All', sortResults: boolean = true): DownloadInfo[] {
+  const normalizedQuery = query.toLowerCase().trim();
+  const filtered: DownloadInfo[] = [];
+  for (let i = 0; i < items.length; i++) {
+    const item = items[i];
+    const labels = downloadFilterLabels(item);
+    let statusMatched = false;
+    for (let f = 0; f < labels.length; f++) {
+      if (statusFilters.indexOf(labels[f]) >= 0) {
+        statusMatched = true;
+        break;
+      }
+    }
+    if (!statusMatched) {
+      continue;
+    }
+    if (labelFilter !== '__all__' && item.label !== labelFilter) {
+      continue;
+    }
+    if (categoryFilter !== 'All' && categoryName(item.category) !== categoryFilter) {
+      continue;
+    }
+    if (normalizedQuery.length > 0 && !downloadItemMatches(item, normalizedQuery)) {
+      continue;
+    }
+    filtered.push(item);
+  }
+  if (sortResults) {
+    sortDownloadItems(filtered, sortMode);
+  }
+  return filtered;
+}
+
+function downloadItemMatches(item: DownloadInfo, query: string): boolean {
+  const title = item.title.toLowerCase();
+  const uploader = item.uploader === undefined ? '' : item.uploader.toLowerCase();
+  const label = item.label.toLowerCase();
+  return title.indexOf(query) >= 0 || uploader.indexOf(query) >= 0 || label.indexOf(query) >= 0 ||
+    item.gid.toString().indexOf(query) >= 0;
+}
+// 一条记录可能同时属于「状态分类」和「来源分类」：例如本地图册既是已下载也是本地；
+// 缺失的云端记录既是文件缺失也是仅云端/云端已删。任一命中即显示。
+export function downloadFilterLabels(item: DownloadInfo): string[] {
+  const labels: string[] = [];
+  const state = item.state;
+  // 安卓 DB 遗留的 Update/Invalid 归到相邻可见分类，避免这两类记录在筛选里彻底消失。
+  if (state === DownloadState.Update) {
+    labels.push('Downloaded');
+  } else if (state === DownloadState.Invalid) {
+    labels.push('Failed');
+  } else if (state === DownloadState.None) {
+    labels.push('Waiting');
+  } else {
+    labels.push(downloadStateLabel(state));
+  }
+  if (item.token === undefined || item.token.length === 0) {
+    labels.push('Local');
+  } else if (state === DownloadState.Missing) {
+    labels.push(item.cloudState === 'gone' ? 'Cloud gone' : 'Cloud only');
+  }
+  return labels;
+}
+
+export function downloadStateLabel(state: DownloadState): string {
+  if (state === DownloadState.Wait) {
+    return 'Waiting';
+  }
+  if (state === DownloadState.Downloading) {
+    return 'Downloading';
+  }
+  if (state === DownloadState.Finish) {
+    return 'Downloaded';
+  }
+  if (state === DownloadState.Failed) {
+    return 'Failed';
+  }
+  if (state === DownloadState.Update) {
+    return 'Updating';
+  }
+  if (state === DownloadState.Missing) {
+    return 'Files missing';
+  }
+  if (state === DownloadState.Invalid) {
+    return 'Invalid';
+  }
+  return 'Idle';
+}
+
+export function downloadStateColor(state: DownloadState): string {
+  if (state === DownloadState.Wait) {
+    return paletteDownloadStateWaitColor();
+  }
+  if (state === DownloadState.Downloading) {
+    return paletteDownloadStateActiveColor();
+  }
+  if (state === DownloadState.Finish) {
+    return paletteDownloadStateDoneColor();
+  }
+  if (state === DownloadState.Failed || state === DownloadState.Invalid ||
+    state === DownloadState.Missing) {
+    return paletteDownloadStateFailedColor();
+  }
+  return paletteDownloadStateIdleColor();
+}
+
+// 下载项对外只暴露这一套状态。详情按钮、下载行徽标/进度、底部汇总全部从这里取，
+// 否则同一项会出现「列表说失败、按钮说已完成、汇总又没算进去」。
+export enum DownloadDisplayState {
+  None = 'none',
+  Queued = 'queued',
+  Active = 'active',
+  Done = 'done',
+  Failed = 'failed',
+  Missing = 'missing'
+}
+
+export function downloadDisplayState(item: DownloadInfo | null): DownloadDisplayState {
+  if (item === null) {
+    return DownloadDisplayState.None;
+  }
+  const total = item.total > 0 ? item.total : item.pages;
+  if (item.state === DownloadState.Missing) {
+    return DownloadDisplayState.Missing;
+  }
+  if (item.state === DownloadState.Downloading) {
+    return DownloadDisplayState.Active;
+  }
+  // 配额保护会把已经下满的任务改标成 failed/wait，页数够了就是完成，
+  // 这一条以前只有「点进去能读」知道，列表和汇总都不知道。
+  if (item.state === DownloadState.Finish || (total > 0 && item.finished >= total)) {
+    return DownloadDisplayState.Done;
+  }
+  if (item.state === DownloadState.Failed) {
+    return DownloadDisplayState.Failed;
+  }
+  // 非失败、未完成、也不在下载中的任务，一律按「等待中」处理。
+  // 原来落到 None 会显示成「空闲」，用户看不懂这个状态，而且它和「等待中」行为完全一样
+  // （点一下就能重新开始），没必要单独暴露一个状态。
+  return DownloadDisplayState.Queued;
+}
+
+export function downloadDisplayLabel(display: DownloadDisplayState): string {
+  if (display === DownloadDisplayState.Queued) {
+    return 'Waiting';
+  }
+  if (display === DownloadDisplayState.Active) {
+    return 'Downloading';
+  }
+  if (display === DownloadDisplayState.Done) {
+    return 'Downloaded';
+  }
+  if (display === DownloadDisplayState.Failed) {
+    return 'Failed';
+  }
+  if (display === DownloadDisplayState.Missing) {
+    return 'Files missing';
+  }
+  return 'Idle';
+}
+
+export function downloadDisplayColor(display: DownloadDisplayState): string {
+  if (display === DownloadDisplayState.Queued) {
+    return downloadStateColor(DownloadState.Wait);
+  }
+  if (display === DownloadDisplayState.Active) {
+    return downloadStateColor(DownloadState.Downloading);
+  }
+  if (display === DownloadDisplayState.Done) {
+    return downloadStateColor(DownloadState.Finish);
+  }
+  if (display === DownloadDisplayState.Failed) {
+    return downloadStateColor(DownloadState.Failed);
+  }
+  if (display === DownloadDisplayState.Missing) {
+    return downloadStateColor(DownloadState.Missing);
+  }
+  return downloadStateColor(DownloadState.None);
+}
+
+export function currentThemeName(): string {
+  return themeCurrentThemeName();
+}
+
+export function currentDisplayMode(): string {
+  return themeCurrentDisplayMode();
+}
+
+export function currentDarkModeThemeName(): string {
+  return themeCurrentDarkModeThemeName();
+}
+
+export function isDarkTheme(): boolean {
+  return themeIsDarkTheme();
+}
+
+export function isBlackTheme(): boolean {
+  return themeIsBlackTheme();
+}
+
+export function themePageBackground(): string {
+  return palettePageBackground();
+}
+
+export function themePrimaryColor(): string {
+  return palettePrimaryColor();
+}
+
+export function themeSurface(): string {
+  return paletteSurface();
+}
+
+export function themeSurfaceVariant(): string {
+  return paletteSurfaceVariant();
+}
+
+export function themeFieldBackground(): string {
+  return paletteFieldBackground();
+}
+
+export function themePrimaryText(): string {
+  return palettePrimaryText();
+}
+
+export function themeSecondaryText(): string {
+  return paletteSecondaryText();
+}
+
+export function themeTertiaryText(): string {
+  return paletteTertiaryText();
+}
+
+export function themeMutedText(): string {
+  return paletteMutedText();
+}
+
+export function themeDividerColor(): string {
+  return paletteDividerColor();
+}
+
+export function themePlaceholderColor(): string {
+  return palettePlaceholderColor();
+}
+
+export function themeSelectedBackground(): string {
+  return paletteSelectedBackground();
+}
+
+export function themeSelectedBackgroundLight(): string {
+  return paletteSelectedBackgroundLight();
+}
+
+function clampColorChannel(value: number): number {
+  return Math.max(0, Math.min(255, Math.round(value)));
+}
+
+function hexChannel(value: number): string {
+  const hex = clampColorChannel(value).toString(16).toUpperCase();
+  return hex.length === 1 ? '0' + hex : hex;
+}
+
+function parseHexChannel(color: string, start: number): number {
+  const parsed = Number.parseInt(color.substring(start, start + 2), 16);
+  return Number.isNaN(parsed) ? 0 : parsed;
+}
+
+function mixHexColor(from: string, to: string, amount: number): string {
+  const source = from.length >= 7 && from.charAt(0) === '#' ? from : palettePrimaryColor();
+  const target = to.length >= 7 && to.charAt(0) === '#' ? to : '#FFFFFF';
+  const ratio = Math.max(0, Math.min(1, amount));
+  const r = parseHexChannel(source, 1) + (parseHexChannel(target, 1) - parseHexChannel(source, 1)) * ratio;
+  const g = parseHexChannel(source, 3) + (parseHexChannel(target, 3) - parseHexChannel(source, 3)) * ratio;
+  const b = parseHexChannel(source, 5) + (parseHexChannel(target, 5) - parseHexChannel(source, 5)) * ratio;
+  return '#' + hexChannel(r) + hexChannel(g) + hexChannel(b);
+}
+export function immersiveChromeHeightFromOffset(offsetY: number, expandedHeight: number): number {
+  return Math.max(0, Math.min(expandedHeight, expandedHeight + offsetY));
+}
+
+function immersiveChromeOffsetFromHeight(height: number, expandedHeight: number): number {
+  return Math.max(-expandedHeight, Math.min(0, height - expandedHeight));
+}
+
+function nextImmersiveChromeHeight(currentHeight: number, scrollOffset: number, contentOffset: number,
+  expandedHeight: number): number {
+  if (contentOffset <= 4) {
+    return expandedHeight;
+  }
+  if (scrollOffset > 0) {
+    return Math.max(0, currentHeight - scrollOffset);
+  }
+  return Math.max(0, Math.min(expandedHeight, currentHeight));
+}
+
+export function nextFloatingToolbarOffset(currentOffset: number, scrollOffset: number, contentOffset: number,
+  barHeight: number): number {
+  const currentHeight = immersiveChromeHeightFromOffset(currentOffset, barHeight);
+  const nextHeight = nextImmersiveChromeHeight(currentHeight, scrollOffset, contentOffset, barHeight);
+  return immersiveChromeOffsetFromHeight(nextHeight, barHeight);
+}
+
+export function downloadProgressText(item: DownloadInfo): string {
+  const total = item.total > 0 ? item.total : item.pages;
+  if (total <= 0) {
+    return '-';
+  }
+  // 文件缺失时进度不能还显示满格，否则和“文件缺失”自相矛盾。
+  if (item.state === DownloadState.Missing) {
+    return '0/' + total.toString();
+  }
+  return item.finished.toString() + '/' + total.toString();
+}
+
+export function downloadSizeText(size: number): string {
+  if (size <= 0) {
+    return '0 B';
+  }
+  if (size < 1024) {
+    return size.toString() + ' B';
+  }
+  if (size < 1024 * 1024) {
+    return Math.round(size / 1024).toString() + ' KB';
+  }
+  return Math.round(size / 1024 / 1024).toString() + ' MB';
+}
+
+export function downloadImageUrlForPage(page: GalleryPage): string {
+  if (appSettingsStore.getValue('download_origin_image', 'Off') === 'On' && page.originImageUrl.length > 0) {
+    return page.originImageUrl;
+  }
+  return page.imageUrl;
+}
+
+export function downloadThreadLimit(): number {
+  const value = Number.parseInt(appSettingsStore.getValue('download_thread', '5'));
+  if (Number.isNaN(value) || value <= 0) {
+    return 1;
+  }
+  return Math.max(1, Math.min(value, 10));
+}
+
+export function downloadPageIndexes(count: number): number[] {
+  const indexes: number[] = [];
+  if (appSettingsStore.getValue('download_order_asc', 'On') === 'On') {
+    for (let i = 0; i < count; i++) {
+      indexes.push(i);
+    }
+  } else {
+    for (let i = count - 1; i >= 0; i--) {
+      indexes.push(i);
+    }
+  }
+  return indexes;
+}
+
+export function downloadQueueSummary(items: DownloadInfo[]): string {
+  let wait = 0;
+  let active = 0;
+  let failed = 0;
+  for (let i = 0; i < items.length; i++) {
+    const display = downloadDisplayState(items[i]);
+    if (display === DownloadDisplayState.Queued) {
+      wait++;
+    } else if (display === DownloadDisplayState.Active) {
+      active++;
+    } else if (display === DownloadDisplayState.Failed) {
+      failed++;
+    }
+  }
+  if (active <= 0 && failed <= 0) {
+    return '';
+  }
+  return uiText('Waiting') + ' ' + wait.toString() + ' / ' + uiText('Downloading') + ' ' + active.toString() +
+    ' / ' + uiText('Failed') + ' ' + failed.toString();
+}
+export function launchRouteFromSetting(value: string): GalleryRoute {
+  if (value === 'Subscription') {
+    return GalleryRoute.Subscription;
+  }
+  if (value === 'What\'s Hot') {
+    return GalleryRoute.WhatsHot;
+  }
+  if (value === 'Favorites') {
+    return GalleryRoute.Favorites;
+  }
+  return GalleryRoute.Home;
+}
+
+export function settingsPanelTitle(panel: SettingsPanel): string {
+  for (let i = 0; i < SETTINGS_HEADERS.length; i++) {
+    if (SETTINGS_HEADERS[i].panel === panel) {
+      return SETTINGS_HEADERS[i].title;
+    }
+  }
+  if (panel === SettingsPanel.Session) {
+    return 'Sign in';
+  }
+  if (panel === SettingsPanel.MyTags) {
+    return 'My Tags';
+  }
+  if (panel === SettingsPanel.TranslationPrompt) {
+    return 'System prompts';
+  }
+  if (panel === SettingsPanel.ReaderPresets) {
+    return 'Reading presets';
+  }
+  if (panel === SettingsPanel.CommentBlacklist) {
+    return 'Comment blacklist';
+  }
+  if (panel === SettingsPanel.RemoteStorage) {
+    return 'Remote storage';
+  }
+  return 'Settings';
+}
+
+function sourceSettingsRows(panel: SettingsPanel, themeName: string, entries: SettingEntry[],
+  readerCacheSizeText: string = '...', downloadRedundancyText: string = '...'): SettingsRowItem[] {
+  if (panel === SettingsPanel.Eh) {
+    const listMode = settingEntryValue(entries, 'list_mode', 'Detail');
+    const rows: SettingsRowItem[] = [
+      staticSettingsRow('identity_cookie', 'Identity cookies',
+        'View or import identity cookies; local igneous is never exported or transferred', '', 'navigation'),
+      optionSettingsRow('gallery_site', 'Gallery site', 'Select E-Hentai or ExHentai for browsing and requests', entries, ['E-Hentai', 'ExHentai']),
+      staticSettingsRow('u_config', 'UConfig', 'Account configuration page, requires sign in', '', 'navigation'),
+      optionSettingsRow('use_account_default_filter', 'Use account filters', 'Use filtering options captured from UConfig', entries, ON_OFF_OPTIONS),
+      staticSettingsRow('my_tags', 'My Tags', 'Manage watched and hidden tags, requires sign in', '', 'navigation'),
+      optionSettingsRow('launch_page', 'Launch page', 'Default start scene after warnings and sign-in checks', entries, ['Homepage', 'Subscription', 'What\'s Hot', 'Favorites']),
+      optionSettingsRow('list_mode', 'List mode', 'Choose detail, thumbnail or extended gallery cards', entries, ['Detail', 'Thumb', 'Extended'])
+    ];
+    if (listMode === 'Thumb') {
+      rows.push(optionSettingsRow('thumb_size', 'Thumb size', 'Thumbnail column size in thumbnail mode', entries,
+        ['Small', 'Medium', 'Large', 'XLarge']));
+      rows.push(optionSettingsRow('show_gallery_rating', 'Show gallery rating',
+        'Display rating in thumbnail cards', entries, ON_OFF_OPTIONS));
+      rows.push(optionSettingsRow('show_gallery_language', 'Show gallery language',
+        'Display language in thumbnail cards', entries, ON_OFF_OPTIONS));
+    } else {
+      rows.push(optionSettingsRow('detail_size', 'Detail size', 'Gallery card size in detail and extended modes', entries,
+        ['Compact', 'Medium', 'Loose']));
+    }
+    rows.push(
+      optionSettingsRow(HISTORY_INFO_SIZE_KEY, 'History size', 'Maximum stored gallery history records',
+        entries, historyInfoSizeOptions()),
+      optionSettingsRow('show_jpn_title', 'Show Japanese title', 'Prefer original title when available', entries, ON_OFF_OPTIONS),
+      optionSettingsRow('show_gallery_pages', 'Show gallery pages', 'Display page count in gallery list rows', entries, ON_OFF_OPTIONS),
+      optionSettingsRow('show_tag_translations', 'Show tag translations', 'Use translated tag labels when data is available', entries, ON_OFF_OPTIONS),
+      optionSettingsRow('split_screen_mode', 'Split screen mode', 'Use left-right panes on wide screens', entries, ON_OFF_OPTIONS),
+      optionSettingsRow('display_mode', 'Display mode',
+        'Light, Dark, or follow the system appearance', entries, ['Light', 'Dark', 'Follow']),
+      optionSettingsRow('theme_color', 'Theme color',
+        'Choose the accent color used by app bars, buttons and selected items', entries,
+        ['Adaptive', 'Blue', 'Sky Blue', 'Teal', 'Green', 'Purple', 'Orange', 'Rose']),
+      optionSettingsRow(FLOATING_ACTION_HOLDING_HAND_SETTING_KEY, 'Smart grip',
+        'Move floating action buttons to the detected holding hand', entries, ON_OFF_OPTIONS),
+      staticSettingsRow('filter', 'Filter', 'Keyword/gallery filtering rules', '', 'navigation'),
+      staticSettingsRow('comment_blacklist', 'Comment blacklist',
+        'Block comments from selected user names', '', 'navigation'),
+      optionSettingsRow('show_eh_events', 'Automatic check-in',
+        'Visit E-Hentai on app startup to claim the daily account reward', entries, ON_OFF_OPTIONS),
+      optionSettingsRow('show_eh_limits', 'Show EH limits', 'Display account and image limits in the drawer', entries, ON_OFF_OPTIONS),
+      optionSettingsRow('cellular_network_warning', 'Cellular network warning', 'Warn before network-heavy operations on mobile data', entries, ON_OFF_OPTIONS)
+    );
+    return rows;
+  }
+
+  if (panel === SettingsPanel.Read) {
+    const readingDirection = normalizeReadingDirectionOption(settingEntryValue(entries, 'reading_direction', 'Right to left'));
+    const continuousMode = readingDirection === 'Top to bottom';
+    const adaptiveDualPage = settingEntryValue(entries, 'adaptive_dual_page', 'Off') === 'On';
+    const rows: SettingsRowItem[] = [
+      staticSettingsRow('reader_presets', 'Reading presets',
+        'Save and quickly apply groups of reader settings', '', 'navigation'),
+      optionSettingsRow('screen_rotation', 'Screen rotation', 'Reader orientation policy', entries,
+        continuousMode || adaptiveDualPage ? ['Default', 'Portrait', 'Landscape', 'Auto rotate'] :
+          ['Default', 'Portrait', 'Landscape', 'Auto rotate', 'Match image']),
+      optionSettingsRow('reading_direction', 'Reading direction', 'Left-to-right, right-to-left or vertical reader movement', entries,
+        adaptiveDualPage ? ['Left to right', 'Right to left'] : ['Left to right', 'Right to left', 'Top to bottom']),
+      optionSettingsRow('page_scaling', 'Page scaling', 'Choose how reader pages fit the screen', entries,
+        adaptiveDualPage ? ['Fit screen'] : continuousMode ? ['Actual size', 'Fit width', 'Fixed scale'] :
+          ['Actual size', 'Fit width', 'Fit height', 'Fit screen', 'Fixed scale']),
+      optionSettingsRow('adaptive_dual_page', 'Adaptive dual page',
+        'Show two wide or narrow pages together when both fit on screen', entries, ON_OFF_OPTIONS),
+      optionSettingsRow('reader_crop_white_borders', 'Crop white and black borders',
+        'Automatically trim uniform light or dark margins while reading', entries, ON_OFF_OPTIONS),
+      optionSettingsRow('reader_image_super_resolution', 'Image super resolution',
+        'Use the system image engine to enhance low-resolution reader pages', entries, ON_OFF_OPTIONS)
+    ];
+    const superResolutionEngines = readerSuperResolutionEngineOptions();
+    if (settingEntryValue(entries, 'reader_image_super_resolution', 'Off') === 'On' &&
+      superResolutionEngines.length > 1) {
+      rows.push(optionSettingsRow('reader_super_resolution_engine', 'Super-resolution engine',
+        'Choose detail enhancement or Core Vision AI on API 26 devices', entries, superResolutionEngines));
+    }
+    rows.push(
+      optionSettingsRow('reader_sdr_to_hdr', 'SDR to HDR',
+        'Convert reader images in the prerender range to HDR; super resolution runs first when both are enabled',
+        entries, ON_OFF_OPTIONS),
+      optionSettingsRow('start_position', 'Start position', 'Where a gallery starts when opened', entries, ['Top left', 'Top right', 'Bottom left', 'Bottom right', 'Center']),
+      optionSettingsRow('start_transfer_time', 'Auto transfer time', 'Delay before automatically advancing to the next page', entries, readerAutoTransferTimeOptions()),
+      optionSettingsRow('reader_standalone', 'Standalone reader', 'Open the reader in its own window', entries, ON_OFF_OPTIONS),
+      optionSettingsRow(MULTI_DEVICE_CONTINUATION_SETTING_KEY, 'Multi-device continuation',
+        'Continue the current comic on another device', entries, ON_OFF_OPTIONS),
+      optionSettingsRow('keep_screen_on', 'Keep screen on', 'Prevent screen sleep while reading', entries, ON_OFF_OPTIONS),
+      optionSettingsRow('gallery_show_clock', 'Show clock', 'Show clock overlay in the reader', entries, ON_OFF_OPTIONS),
+      optionSettingsRow('gallery_show_progress', 'Show progress', 'Show reader progress overlay', entries, ON_OFF_OPTIONS),
+      optionSettingsRow('gallery_show_battery', 'Show battery', 'Show battery overlay', entries, ON_OFF_OPTIONS),
+      optionSettingsRow('volume_page', 'Volume page', 'Use volume buttons to turn pages', entries, ON_OFF_OPTIONS),
+      optionSettingsRow('reverse_volume_page', 'Reverse volume buttons',
+        'Swap the page-turning direction of volume up and volume down', entries, ON_OFF_OPTIONS),
+      optionSettingsRow('reading_fullscreen', 'Reading fullscreen', 'Hide system chrome while reading', entries, ON_OFF_OPTIONS),
+      optionSettingsRow('reader_background', 'Reader background', 'Background color behind reader pages', entries, ['Black', 'White', 'Deep gray']),
+      optionSettingsRow('custom_screen_lightness', 'Custom brightness', 'Enable custom reader brightness', entries, ON_OFF_OPTIONS),
+      optionSettingsRow('screen_lightness', 'Screen lightness', 'Custom reader brightness when enabled', entries, readerBrightnessLevelOptions()),
+      optionSettingsRow('ultra_dark_mode', 'Ultra dark mode', 'Dim reader with a black overlay and minimum system brightness', entries, ON_OFF_OPTIONS),
+      optionSettingsRow('ultra_dark_lightness', 'Ultra dark brightness', 'Black overlay opacity while ultra dark mode is enabled', entries, readerUltraDarkLightnessOptions())
+    );
+    return rows;
+  }
+
+  if (panel === SettingsPanel.Download) {
+    const downloadLocationOptions: string[] = remoteStorageProfileStore.profileForPurpose(
+      REMOTE_STORAGE_PURPOSE_DOWNLOADS) !== null ? ['App files', 'Downloads', 'Remote server'] :
+      ['App files', 'Downloads'];
+    return [
+      optionSettingsRow('download_location', 'Download location',
+        'App files, public Downloads, or a configured remote storage server',
+        entries, downloadLocationOptions),
+      staticSettingsRow('remote_storage', 'Remote storage',
+        'WebDAV profiles for backup, sync and download mirror', '', 'navigation'),
+      optionSettingsRow('remote_sync_wifi_only', 'Sync on Wi-Fi only', 'Pause remote sync on cellular networks', entries, ON_OFF_OPTIONS),
+      optionSettingsRow('download_thread', 'Multi-thread download', 'Number of images downloaded at the same time',
+        entries, ['1', '2', '3', '4', '5', '8', '10']),
+      optionSettingsRow('preload_image', 'Preload image', 'Number of following reader images loaded in advance',
+        entries, ['0', '3', '5', '10', '20']),
+      optionSettingsRow('image_size', 'Image resolution', 'Requested E-Hentai image size', entries,
+        ['Auto', '780x', '1280x', '1600x', '2400x', 'Original']),
+      optionSettingsRow('download_origin_image', 'Download original image', 'Prefer original files when available', entries, ON_OFF_OPTIONS),
+      optionSettingsRow('download_timeout', 'Download timeout', 'Network timeout for image tasks', entries, ['15s', '30s', '60s', '120s']),
+      optionSettingsRow('download_order_asc', 'Download order ascending', 'Store pages in ascending page order', entries, ON_OFF_OPTIONS),
+      optionSettingsRow('download_order_asc', 'Download order ascending', 'Store pages in ascending page order', entries, ON_OFF_OPTIONS)
+    ];
+  }
+
+  if (panel === SettingsPanel.Privacy) {
+    return [
+      optionSettingsRow('pattern_protection', 'Identity authentication', 'Verify identity when the app returns from background',
+        entries, identityAuthenticationOptions()),
+      optionSettingsRow('enable_secure', 'Privacy mode', 'Prevent screenshots and insecure previews', entries, ON_OFF_OPTIONS),
+      optionSettingsRow('save_parse_error_body', 'Save parse error body', 'Persist parser failures for debugging', entries, ON_OFF_OPTIONS),
+      optionSettingsRow('save_crash_log', 'Save crash log', 'Persist app errors and debug messages locally', entries, ON_OFF_OPTIONS),
+      staticSettingsRow('clear_app_log', 'Clear saved log', 'Delete the local app log file', 'Clear', 'action'),
+      staticSettingsRow('restore_default_settings', 'Restore default settings',
+        'Reset all options to factory defaults; cookies, downloads and history are not affected', 'Restore', 'action')
+    ];
+  }
+
+  if (panel === SettingsPanel.Translation) {
+    const machineProvider = settingEntryValue(entries, 'translation_machine_provider', 'Google Web');
+    const aiEnabled = settingEntryValue(entries, 'translation_ai_enabled', 'Off') === 'On';
+    const aiProvider = settingEntryValue(entries, 'translation_ai_provider', 'DeepSeek');
+    const machineProviderOptions = ['Google Web', 'Bing Web', 'Baidu Web', 'Youdao Web', 'MyMemory', 'Lingva'];
+    const machineProviderDescriptions = [
+      'Free Google web translation without an API key',
+      'Free Microsoft web translation without an API key',
+      'Free Baidu web translation without an API key',
+      'Free Youdao web translation without an API key',
+      'Public translation memory with a short text limit',
+      'Open-source Google translation proxy'
+    ];
+    const aiProviderOptions = ['DeepSeek', 'OpenAI', 'Gemini', 'Custom API'];
+    const aiProviderDescriptions = [
+      'DeepSeek AI translation using your API key',
+      'OpenAI model translation using your API key',
+      'Google Gemini translation using your API key',
+      'Saved OpenAI-compatible APIs and local model services'
+    ];
+    const rows: SettingsRowItem[] = [
+      optionSettingsRow('translation_buttons_enabled', 'Translation feature',
+        'Show translation buttons on gallery lists, details and comments', entries, ON_OFF_OPTIONS),
+      optionSettingsRow('reader_translation_enabled', 'Comic translation',
+        'Show a draggable translation button in the reader', entries, ON_OFF_OPTIONS),
+      optionSettingsRow('reader_ocr_debug_log', 'Record comic OCR debug data',
+        'Save OCR lines, estimated font sizes, grouping and overlay coordinates locally', entries, ON_OFF_OPTIONS),
+      staticSettingsRow('reader_ocr_debug_export', 'Export comic OCR debug data',
+        'Export recorded OCR and overlay layout data to public Downloads', 'Export', 'action'),
+      optionSettingsRow('translation_ai_enabled', 'AI translation',
+        'Use the selected AI service instead of ordinary machine translation', entries, ON_OFF_OPTIONS),
+      optionSettingsRow('translation_target_language', 'Target language',
+        'Language used for gallery titles and comments', entries,
+        ['Simplified Chinese', 'Traditional Chinese', 'English', 'Japanese', 'Korean']),
+      optionSettingsRow('translation_timeout', 'Translation timeout',
+        'Maximum wait time for a translation request', entries, ['10s', '15s', '20s', '30s', '45s', '60s'])
+    ];
+    if (!aiEnabled) {
+      rows.push(staticSettingsRow('translation_machine_section', 'Machine translation',
+        'Choose the web translation service', '', 'section'));
+      rows.push(optionSettingsRow('translation_machine_provider', 'Machine translation provider',
+        'Choose the web translation service', entries, machineProviderOptions, machineProviderDescriptions));
+    } else {
+      rows.push(staticSettingsRow('translation_ai_section', 'AI translation',
+        'Choose the AI translation service', '', 'section'));
+      rows.push(optionSettingsRow('translation_ai_provider', 'AI translation provider',
+        'Choose the AI service used while AI translation is enabled', entries, aiProviderOptions, aiProviderDescriptions));
+      rows.push(optionSettingsRow('translation_ai_thinking_enabled', 'Thinking mode',
+        'Let supported AI models reason before translating; disabling uses non-thinking or the lowest available level',
+        entries, ON_OFF_OPTIONS));
+      rows.push(optionSettingsRow('translation_ai_conversation_log', 'Record AI conversations',
+        'Save prompts sent to AI services and their returned text locally; disabling clears all records', entries,
+        ON_OFF_OPTIONS));
+      rows.push(staticSettingsRow('translation_ai_log_export', 'Export AI conversation records',
+        'Export recorded AI translation conversations to public Downloads', 'Export', 'action'));
+    }
+    rows.push(optionSettingsRow('translation_batch_enabled', 'Merge translation requests',
+      'Combine pending texts into fewer requests; AI batches contain up to 5 texts', entries, ON_OFF_OPTIONS));
+    if (!aiEnabled) {
+      rows.push(staticSettingsRow('translation_public_notice', 'Public translation notice',
+        'Public providers require no token but may be rate-limited or unavailable; translated text is sent to the selected service',
+        machineProvider === 'Google Web' ? 'Experimental' : 'Public service', 'info'));
+    }
+    if (aiEnabled && aiProvider === 'DeepSeek') {
+      rows.push(textSettingsRow('translation_deepseek_api_key', 'DeepSeek API key',
+        'Stored locally and sent only to DeepSeek', entries, ''));
+      rows.push(modelSettingsRow('translation_deepseek_model', 'DeepSeek model',
+        'Fetch available models or enter a model name', settingEntryValue(entries, 'translation_deepseek_model',
+          'deepseek-v4-flash')));
+    } else if (aiEnabled && aiProvider === 'OpenAI') {
+      rows.push(textSettingsRow('translation_official_openai_api_key', 'OpenAI API key',
+        'Stored locally and sent only to OpenAI', entries, ''));
+      rows.push(modelSettingsRow('translation_official_openai_model', 'OpenAI model',
+        'Fetch available OpenAI models or enter a model name',
+        settingEntryValue(entries, 'translation_official_openai_model', 'gpt-4.1-mini')));
+    } else if (aiEnabled && aiProvider === 'Gemini') {
+      rows.push(textSettingsRow('translation_gemini_api_key', 'Gemini API key',
+        'Stored locally and sent only to Google Gemini', entries, ''));
+      rows.push(modelSettingsRow('translation_gemini_model', 'Gemini model',
+        'Fetch available Gemini models or enter a model name',
+        settingEntryValue(entries, 'translation_gemini_model', 'gemini-3.5-flash')));
+    } else if (aiEnabled && aiProvider === 'Custom API') {
+      const savedApis = parseSavedTranslationApis(settingEntryValue(entries, 'translation_custom_apis', '[]'));
+      const selectedName = settingEntryValue(entries, 'translation_custom_api_selected', '');
+      const selected = findSavedTranslationApi(savedApis, selectedName);
+      const apiNames: string[] = [];
+      for (let i = 0; i < savedApis.length; i++) {
+        apiNames.push(savedApis[i].name);
+      }
+      apiNames.push('New...');
+      rows.push(optionSettingsRow('translation_custom_api_selected', 'Saved API',
+        'Choose a saved API or create a new configuration', entries, apiNames));
+      if (selected !== null) {
+        rows.push(valueSettingsInputRow('translation_custom_api_name', 'API name',
+          'Name shown in the saved API list', selected.name));
+        rows.push(valueSettingsInputRow('translation_custom_api_base_url', 'API address',
+          'Base URL ending in /v1 or a complete chat completions URL', selected.baseUrl));
+        rows.push(valueSettingsInputRow('translation_custom_api_key', 'API key',
+          'Stored separately for this saved API', selected.apiKey));
+        rows.push(modelSettingsRow('translation_custom_api_model', 'Model',
+          'Fetch models from this API or enter a model name', selected.model));
+      }
+    }
+    if (aiEnabled) {
+      rows.push(staticSettingsRow('translation_prompt_settings', 'System prompts',
+        'Choose, edit and save prompts used by AI translation', '', 'navigation'));
+    }
+    rows.push(staticSettingsRow('translation_test', 'Test translation',
+      'Translate a short sample with the current provider', 'Run', 'action'));
+    return rows;
+  }
+
+  if (panel === SettingsPanel.Advanced) {
+    const rows: SettingsRowItem[] = [
+      staticSettingsRow('dump_logcat', 'Export log', 'Save the local app log to a text file', 'Export', 'action'),
+      staticSettingsRow('clear_download_path_cache', 'Clear download path cache', 'Clear cached file path and size lookups', 'Run', 'action'),
+      staticSettingsRow('clear_memory_cache', 'Clear cache', 'Drop reader image and page caches',
+        readerCacheSizeText, 'action'),
+      optionSettingsRow('read_cache_size', 'Read cache size', 'Reader cache budget', entries,
+        ['160 MB', '320 MB', '640 MB', '1 GB', '2 GB']),
+      optionSettingsRow('app_language', 'Language', 'Choose the interface language; System follows the device', entries,
+        ['System', 'English', 'zh-CN', 'zh-TW']),
+      staticSettingsRow('proxy_settings', 'Proxy',
+        'Configure direct, system, HTTP or SOCKS5 proxy', settingEntryValue(entries, 'proxy', 'System'), 'dialog'),
+      staticSettingsRow('network_diagnostics', 'Network diagnostics', 'Test E, EX, forums and repo connectivity with current settings', 'Run', 'action'),
+    ];
+    rows.push(optionSettingsRow('built_in_hosts', 'Built-in hosts', 'Force bundled host overrides; leave Off for normal Cloudflare DNS; restart the app after changing', entries, ON_OFF_OPTIONS));
+    rows.push(optionSettingsRow('built_ex_hosts', 'Built EX hosts', 'Force bundled ExHentai host overrides; leave Off unless your network needs them', entries, ON_OFF_OPTIONS));
+    rows.push(optionSettingsRow('dns_over_https', 'Secure DNS (DoH)', 'Encrypt DNS queries and reduce DNS pollution',
+      entries, ON_OFF_OPTIONS));
+    if (settingEntryValue(entries, 'dns_over_https', 'Off') === 'On') {
+      rows.push(optionSettingsRow('dns_over_https_provider', 'DoH provider',
+        'Choose the encrypted DNS provider', entries, ['Yandex', 'Cloudflare', 'Google']));
+    }
+    rows.push(optionSettingsRow('domain_fronting', 'Domain fronting', 'Bypass SNI blocking using built-in host fronting; restart the app after changing', entries, ON_OFF_OPTIONS));
+    rows.push(optionSettingsRow('auto_direct_connection', 'Direct connection check', 'Use direct connection when the selected site responds within 5s', entries, ON_OFF_OPTIONS));
+    // 数据相关的四个动作原来在「下载」面板，导入/导出时要在两处来回找，统一收到这里。
+    rows.push(staticSettingsRow('restore_download_items', 'Scan download folder',
+      'Register what is already on disk without contacting the server and unpack downloaded ZIP archives; for cloud matching use Import local folder',
+      'Run', 'action'));
+    rows.push(staticSettingsRow('import_local_folder', 'Import local folder',
+      'Pick a folder and scan the galleries inside; galleries the server does not know are kept as local entries',
+      'Run', 'action'));
+    rows.push(staticSettingsRow('clear_search_history', 'Clear search history',
+      'Delete the keywords saved under the search box', 'Run', 'action'));
+    rows.push(staticSettingsRow('verify_cloud_state', 'Verify cloud records',
+      'Check whether cloud-only records still exist on the server; removed ones are marked in red',
+      'Run', 'action'));
+    rows.push(staticSettingsRow('clean_redundancy', 'Clean redundancy',
+      'Merge duplicate records and folders, then delete folders no record points to',
+      downloadRedundancyText, 'action'));
+    rows.push(staticSettingsRow('export_data', 'Export data',
+      'Save settings, login cookies, gallery and search history, reading progress, favorites, downloads, browsing positions, filters and comment blacklist without igneous to a JSON file',
+      'Export', 'action'));
+    rows.push(staticSettingsRow('import_data', 'Import data', 'Restore settings and local data from a supported backup file', 'Import', 'action'));
+    rows.push(staticSettingsRow('wifi_transfer', 'Wi-Fi Direct transfer',
+      'Transfer application settings, reading progress, bookmarks, local favorites, comment blacklist, downloads and image files directly between nearby devices', '',
+      'navigation'));
+    return rows;
+  }
+
+  if (panel === SettingsPanel.About) {
+    return [
+      // 信息行：只显示内容，不带箭头，也不接受点击。
+      // 右侧原来挂了个 "Info"，纯装饰、点了也没反应，去掉。
+      staticSettingsRow('declaration', 'Declaration',
+        'HarmonyOS port based on the open-source EhViewer (Android) project, GPL-3.0', '', 'info'),
+      staticSettingsRow('author', 'Made by', APP_AUTHOR_NAME, 'IFSM', 'info'),
+      staticSettingsRow('latest_release', 'Version', 'Current build of this app', 'v' + appVersionName(), 'info'),
+      staticSettingsRow('issue_help', 'Feedback',
+        'Report a problem or suggest a change; the version and platform are filled in for you',
+        'Feedback', 'url'),
+      staticSettingsRow('github_repo', 'GitHub', 'Source code and releases', 'GitHub', 'url'),
+      staticSettingsRow('donate', 'Donate', 'Support the maintenance of this port', '', 'action'),
+      staticSettingsRow('license', 'License', 'Open-source license used by this project', 'GPL-3.0', 'url'),
+      staticSettingsRow('check_for_updates', 'Check for updates', 'Check for a newer build', 'Run', 'action'),
+      staticSettingsRow('update_tag_translation_database', 'Update tag translation database',
+        'Check for and download the latest Chinese tag translations', 'Run', 'action'),
+      optionSettingsRow('close_auto_updates', 'Skip update check at startup',
+        'Turn on to stop checking for updates when the app starts', entries, ON_OFF_OPTIONS)
+    ];
+  }
+
+  return [staticSettingsRow('theme', 'Theme', 'Choose the app interface theme', themeName, 'list')];
+}
+
+// 设置项归属表：面板 -> 有序 key 列表。
+// 行对象仍由 sourceSettingsRows 按原有分支生成，这里只决定「哪些行进哪个面板、按什么顺序」。
+// 因此调整分类不改任何取值逻辑，也不会动到已保存的配置。
+const SETTINGS_LAYOUT: Record<string, string[]> = {
+  'eh': [
+    'identity_cookie', 'gallery_site', 'u_config', 'use_account_default_filter', 'my_tags',
+    'filter', 'comment_blacklist', 'show_eh_events', 'show_eh_limits',
+  ],
+  'ui': [
+    'launch_page', 'list_mode', 'thumb_size', 'show_gallery_rating', 'show_gallery_language',
+    'detail_size', 'show_jpn_title', 'show_gallery_pages', 'split_screen_mode',
+    'display_mode', 'theme_color', 'app_language'
+  ],
+  'read': [
+    'reader_presets', 'screen_rotation', 'reading_direction', 'page_scaling',
+    'adaptive_dual_page', 'reader_crop_white_borders', 'reader_image_super_resolution',
+    'reader_super_resolution_engine', 'reader_sdr_to_hdr', 'start_position',
+    'start_transfer_time', 'reader_standalone', 'multi_device_continuation', 'keep_screen_on',
+    'gallery_show_clock', 'gallery_show_progress', 'gallery_show_battery', 'volume_page',
+    'reverse_volume_page', 'reading_fullscreen', 'reader_background',
+    'custom_screen_lightness', 'screen_lightness', 'ultra_dark_mode', 'ultra_dark_lightness',
+  ],
+  'download': [
+    'download_location', 'remote_storage', 'remote_sync_wifi_only', 'download_thread',
+    'preload_image', 'image_size', 'download_origin_image', 'download_timeout',
+    'download_order_asc',
+  ],
+  'translation': [
+    'translation_buttons_enabled', 'reader_translation_enabled', 'show_tag_translations',
+    'reader_ocr_debug_log', 'reader_ocr_debug_export', 'translation_ai_enabled',
+    'translation_target_language', 'translation_timeout', 'translation_machine_section',
+    'translation_machine_provider', 'translation_ai_section', 'translation_ai_provider',
+    'translation_ai_thinking_enabled', 'translation_ai_conversation_log',
+    'translation_ai_log_export', 'translation_batch_enabled', 'translation_public_notice',
+    'translation_deepseek_api_key', 'translation_deepseek_model',
+    'translation_official_openai_api_key', 'translation_official_openai_model',
+    'translation_gemini_api_key', 'translation_gemini_model',
+    'translation_custom_api_selected', 'translation_custom_api_model',
+    'translation_prompt_settings', 'translation_test',
+  ],
+  'privacy': [
+    'restore_default_settings',
+    // clear_search_history 原来只生成了行、没挂进任何面板计划，界面上永远看不到；
+    // 放到「历史记录数量」下面，与它属于同一类数据。
+    'pattern_protection', 'enable_secure', 'history_info_size', 'clear_search_history',
+    'clear_download_path_cache',
+    'clear_memory_cache', 'read_cache_size', 'restore_download_items', 'import_local_folder',
+    'verify_cloud_state', 'clean_redundancy', 'export_data', 'import_data', 'wifi_transfer',
+  ],
+  'network': [
+    'cellular_network_warning', 'proxy_settings', 'network_diagnostics', 'built_in_hosts',
+    'built_ex_hosts', 'dns_over_https', 'dns_over_https_provider', 'domain_fronting',
+    'auto_direct_connection',
+  ],
+  'advanced': [
+    'floating_action_holding_hand', 'save_parse_error_body', 'save_crash_log',
+    'clear_app_log', 'dump_logcat',
+  ],
+  'about': [
+    'declaration', 'author', 'latest_release', 'issue_help', 'github_repo', 'donate', 'license',
+    'check_for_updates', 'update_tag_translation_database', 'close_auto_updates',
+  ]
+};
+
+export function settingsRowsForPanel(panel: SettingsPanel, themeName: string, entries: SettingEntry[],
+  readerCacheSizeText: string = '...', downloadRedundancyText: string = '...'): SettingsRowItem[] {
+  const layout = SETTINGS_LAYOUT[panel];
+  if (layout === undefined) {
+    return [];
+  }
+  // 先把原分支的全部行按 key 收进池子，再按归属表挑出本面板需要的行。
+  const sources: SettingsPanel[] = [SettingsPanel.Eh, SettingsPanel.Read, SettingsPanel.Download,
+    SettingsPanel.Privacy, SettingsPanel.Translation, SettingsPanel.Advanced, SettingsPanel.About];
+  const pool: Map<string, SettingsRowItem> = new Map<string, SettingsRowItem>();
+  for (let i = 0; i < sources.length; i++) {
+    const rows = sourceSettingsRows(sources[i], themeName, entries, readerCacheSizeText, downloadRedundancyText);
+    for (let j = 0; j < rows.length; j++) {
+      const key = rows[j].key;
+      if (key !== undefined && key.length > 0) {
+        pool.set(key, rows[j]);
+      }
+    }
+  }
+  const result: SettingsRowItem[] = [];
+  for (let i = 0; i < layout.length; i++) {
+    const row = pool.get(layout[i]);
+    if (row !== undefined) {
+      result.push(row);
+    }
+  }
+  return result;
+}
+
+const ON_OFF_OPTIONS: string[] = ['On', 'Off'];
+
+function readerAutoTransferTimeOptions(): string[] {
+  const options: string[] = [];
+  for (let i = 1; i <= 20; i++) {
+    options.push(i.toString() + 's');
+  }
+  return options;
+}
+
+function readerBrightnessLevelOptions(): string[] {
+  const options: string[] = [];
+  for (let i = 0; i <= 100; i++) {
+    options.push(i.toString() + '%');
+  }
+  return options;
+}
+
+export function readerUltraDarkLightnessOptions(): string[] {
+  const options: string[] = [];
+  for (let i = 1; i <= 100; i++) {
+    options.push(i.toString() + '%');
+  }
+  return options;
+}
+
+export function identityAuthenticationOptions(): string[] {
+  return [
+    IDENTITY_AUTH_OFF,
+    IDENTITY_AUTH_FINGERPRINT_FIRST,
+    IDENTITY_AUTH_FACE_FIRST,
+    IDENTITY_AUTH_PASSWORD_FIRST
+  ];
+}
+
+function optionSettingsRow(key: string, title: string, summary: string, entries: SettingEntry[], options: string[],
+  optionDescriptions: string[] = []): SettingsRowItem {
+  let rawValue = settingEntryValue(entries, key, options.length > 0 ? options[0] : '');
+  if (key === 'display_mode' && options.length > 0 && options.indexOf(rawValue) < 0) {
+    rawValue = options[0];
+  }
+  if (key === 'ui_style' && rawValue === 'HarmonyOS 7') {
+    rawValue = 'Harmony';
+  }
+  const sliderRow = key === 'start_transfer_time' || key === 'screen_lightness' || key === 'ultra_dark_lightness';
+  return {
+    key: key,
+    title: title,
+    summary: summary,
+    value: normalizeReaderSettingOption(key, rawValue),
+    type: sliderRow ? 'slider' : options.length === 2 && options[0] === 'On' && options[1] === 'Off' ? 'switch' : 'list',
+    options: options,
+    optionDescriptions: optionDescriptions
+  };
+}
+
+function normalizeScreenRotationOption(value: string): string {
+  if (value === '1' || value === 'Portrait') {
+    return 'Portrait';
+  }
+  if (value === '2' || value === 'Landscape') {
+    return 'Landscape';
+  }
+  if (value === '3' || value === 'Sensor' || value === 'Auto rotate') {
+    return 'Auto rotate';
+  }
+  if (value === '4' || value === 'Match image') {
+    return 'Match image';
+  }
+  return 'Default';
+}
+
+export function normalizeReadingDirectionOption(value: string): string {
+  if (value === '0' || value === 'Left to right') {
+    return 'Left to right';
+  }
+  if (value === '2' || value === 'Top to bottom') {
+    return 'Top to bottom';
+  }
+  return 'Right to left';
+}
+
+export function normalizePageScalingOption(value: string): string {
+  if (value === '0' || value === 'Actual size' || value === 'Original') {
+    return 'Actual size';
+  }
+  if (value === '1' || value === 'Fit width') {
+    return 'Fit width';
+  }
+  if (value === '2' || value === 'Fit height') {
+    return 'Fit height';
+  }
+  if (value === '4' || value === 'Fixed scale') {
+    return 'Fixed scale';
+  }
+  return 'Fit screen';
+}
+
+export function normalizeStartPositionOption(value: string): string {
+  if (value === '0' || value === 'Top left') {
+    return 'Top left';
+  }
+  if (value === '2' || value === 'Bottom left') {
+    return 'Bottom left';
+  }
+  if (value === '3' || value === 'Bottom right' || value === 'End') {
+    return 'Bottom right';
+  }
+  if (value === '4' || value === 'Center') {
+    return 'Center';
+  }
+  return 'Center';
+}
+
+function normalizeReaderSettingOption(key: string, value: string): string {
+  if (key === 'screen_rotation') {
+    return normalizeScreenRotationOption(value);
+  }
+  if (key === 'reading_direction') {
+    return normalizeReadingDirectionOption(value);
+  }
+  if (key === 'page_scaling') {
+    return normalizePageScalingOption(value);
+  }
+  if (key === 'start_position') {
+    return normalizeStartPositionOption(value);
+  }
+  if (key === 'start_transfer_time') {
+    return normalizeAutoTransferTimeOption(value);
+  }
+  if (key === 'screen_lightness') {
+    return normalizeBrightnessLevelOption(value);
+  }
+  if (key === 'ultra_dark_lightness') {
+    return normalizeUltraDarkLightnessOption(value);
+  }
+  if (key === 'pattern_protection') {
+    return normalizeIdentityAuthenticationOption(value);
+  }
+  if (key === 'read_cache_size') {
+    return normalizeReaderCacheSizeOption(value);
+  }
+  if (key === HISTORY_INFO_SIZE_KEY) {
+    return normalizeHistoryInfoSizeOption(value);
+  }
+  return value;
+}
+
+export function normalizeReaderCacheSizeOption(value: string): string {
+  if (value === '40 MB' || value === '80 MB') {
+    return '160 MB';
+  }
+  if (value === '160 MB' || value === '320 MB' || value === '640 MB' || value === '1 GB' || value === '2 GB') {
+    return value;
+  }
+  return '160 MB';
+}
+
+export function normalizeIdentityAuthenticationOption(value: string): string {
+  if (value === 'On' || value === IDENTITY_AUTH_FINGERPRINT_FIRST) {
+    return IDENTITY_AUTH_FINGERPRINT_FIRST;
+  }
+  if (value === IDENTITY_AUTH_FACE_FIRST) {
+    return IDENTITY_AUTH_FACE_FIRST;
+  }
+  if (value === IDENTITY_AUTH_PASSWORD_FIRST) {
+    return IDENTITY_AUTH_PASSWORD_FIRST;
+  }
+  return IDENTITY_AUTH_OFF;
+}
+
+export function normalizeAutoTransferTimeOption(value: string): string {
+  const seconds = Number.parseInt(value);
+  if (Number.isNaN(seconds)) {
+    return '5s';
+  }
+  return Math.max(1, Math.min(20, seconds)).toString() + 's';
+}
+
+export function normalizeBrightnessLevelOption(value: string): string {
+  const percent = Number.parseInt(value);
+  if (Number.isNaN(percent)) {
+    return '50%';
+  }
+  return Math.max(0, Math.min(100, percent)).toString() + '%';
+}
+
+export function normalizeUltraDarkLightnessOption(value: string): string {
+  const percent = Number.parseInt(value);
+  if (Number.isNaN(percent)) {
+    return '50%';
+  }
+  return Math.max(1, Math.min(100, percent)).toString() + '%';
+}
+
+export function textSettingsRow(key: string, title: string, summary: string, entries: SettingEntry[], fallback: string): SettingsRowItem {
+  return {
+    key: key,
+    title: title,
+    summary: summary,
+    value: settingEntryValue(entries, key, fallback),
+    type: 'input'
+  };
+}
+
+function valueSettingsInputRow(key: string, title: string, summary: string, value: string): SettingsRowItem {
+  return {
+    key: key,
+    title: title,
+    summary: summary,
+    value: value,
+    type: 'input'
+  };
+}
+
+function modelSettingsRow(key: string, title: string, summary: string, value: string): SettingsRowItem {
+  return {
+    key: key,
+    title: title,
+    summary: summary,
+    value: value,
+    type: 'model'
+  };
+}
+
+export function staticSettingsRow(key: string, title: string, summary: string, value: string, type: string): SettingsRowItem {
+  return {
+    key: key,
+    title: title,
+    summary: summary,
+    value: value,
+    type: type
+  };
+}
+
+export function settingEntryValue(entries: SettingEntry[], key: string, fallback: string): string {
+  for (let i = 0; i < entries.length; i++) {
+    if (entries[i].key === key) {
+      return entries[i].value;
+    }
+  }
+  return fallback;
+}
+
+export function cloneStringOptions(options: string[]): string[] {
+  const result: string[] = [];
+  for (let i = 0; i < options.length; i++) {
+    result.push(options[i]);
+  }
+  return result;
+}
+
+export function isValidProxyPortText(value: string): boolean {
+  const port = Number.parseInt(value);
+  return !Number.isNaN(port) && port > 0 && port <= 65535 && port.toString() === value.trim();
+}
+
+export function normalizeProxyOption(value: string): string {
+  if (value === 'Off' || value === 'HTTP' || value === 'SOCKS') {
+    return value;
+  }
+  return 'System';
+}
+
+export function isValidProxyHostText(value: string): boolean {
+  const trimmed = value.trim();
+  if (trimmed.length === 0) {
+    return true;
+  }
+  if (trimmed.length > 255) {
+    return false;
+  }
+  return /^[A-Za-z0-9.\-_:]+$/.test(trimmed);
+}
+
+export function formatNetworkDiagnostics(results: NetworkDiagnosticResult[]): string {
+  const parts: string[] = [];
+  for (let i = 0; i < results.length; i++) {
+    const item = results[i];
+    const status = item.statusCode > 0 ? item.statusCode.toString() : 'ERR';
+    parts.push(item.label + ' ' + status + ' ' + item.elapsedMs.toString() + 'ms' +
+      (item.ok ? '' : ' ' + item.message));
+  }
+  return 'Network diagnostics: ' + parts.join(' | ');
+}
+
+export function listModeForRoute(route: GalleryRoute): ListMode {
+  if (route === GalleryRoute.Subscription) {
+    return ListMode.Subscription;
+  }
+  if (route === GalleryRoute.WhatsHot) {
+    return ListMode.WhatsHot;
+  }
+  if (route === GalleryRoute.TopLists) {
+    return ListMode.TopList;
+  }
+  return ListMode.Normal;
+}
+
+export function routeUsesKeyword(route: GalleryRoute): boolean {
+  return route === GalleryRoute.Home || route === GalleryRoute.Subscription || route === GalleryRoute.Favorites;
+}
+export function defaultKeywordForRoute(_route: GalleryRoute): string {
+  return '';
+}
+
+export function gallerySearchTitle(route: GalleryRoute, keyword: string, filterActive: boolean): string {
+  const trimmed = keyword.trim();
+  if (trimmed.length > 0) {
+    return filterActive ? 'Filter: ' + trimmed : trimmed;
+  }
+  if (route === GalleryRoute.Subscription) {
+    return 'Subscription';
+  }
+  if (route === GalleryRoute.WhatsHot) {
+    return 'What\'s Hot';
+  }
+  if (route === GalleryRoute.Favorites) {
+    return 'Favourite';
+  }
+  return 'Homepage';
+}
+
+export function currentGallerySite(): GallerySite {
+  return appSettingsStore.getValue('gallery_site', 'E-Hentai') === 'ExHentai' ? GallerySite.Ex : GallerySite.E;
+}
+
+export function effectiveListSite(_route: GalleryRoute): GallerySite {
+  return currentGallerySite();
+}
+
+function gallerySiteName(site: GallerySite): string {
+  return site === GallerySite.Ex ? 'ExHentai' : 'E-Hentai';
+}
+
+export function galleryListFailureMessage(result: GalleryListLoadResult, site: GallerySite): string {
+  if (result.statusCode >= 200 && result.statusCode < 300) {
+    // 站点在验证/拦截页面上也可能返回 200，正文解析出 0 条。
+    // 这种情况要按失败报告，否则用户看到「无结果」，以为是关键词没搜到。
+    const message = result.message.toLowerCase();
+    const blocked = message.indexOf('fail') >= 0 || message.indexOf('error') >= 0 ||
+      message.indexOf('tls') >= 0 || message.indexOf('blocked') >= 0 ||
+      message.indexOf('required') >= 0 || message.indexOf('verif') >= 0;
+    if (!blocked) {
+      return 'No results';
+    }
+    const detail = result.message.length > 0 ? result.message : 'empty response';
+    return 'Load failed: ' + gallerySiteName(site) + ', HTTP ' + result.statusCode.toString() + ', ' + detail;
+  }
+  const status = result.statusCode > 0 ? 'HTTP ' + result.statusCode.toString() + ', ' : '';
+  const url = result.url.length > 0 ? ', ' + result.url : '';
+  return 'Load failed: ' + gallerySiteName(site) + ', ' + status + result.message + url;
+}
+export function readerPageReferer(detailUrl: string, previews: GalleryPreview[], index: number, site: GallerySite): string {
+  if (index > 0 && index - 1 < previews.length && previews[index - 1].pageUrl.length > 0) {
+    return previews[index - 1].pageUrl;
+  }
+  if (detailUrl.length > 0) {
+    return detailUrl;
+  }
+  return EhUrl.getReferer(site);
+}
+
+export function readerDisplayImageUrl(page: GalleryPage, preferOriginal: boolean): string {
+  if (preferOriginal && page.cachedOriginImagePath !== undefined && page.cachedOriginImagePath.length > 0 &&
+    localImagePathExists(page.cachedOriginImagePath)) {
+    return readerLocalImageSource(page.cachedOriginImagePath);
+  }
+  if (!preferOriginal && page.cachedImagePath !== undefined && page.cachedImagePath.length > 0 &&
+    localImagePathExists(page.cachedImagePath)) {
+    return readerLocalImageSource(page.cachedImagePath);
+  }
+  if (preferOriginal && page.originImageUrl.length > 0) {
+    return '';
+  }
+  return '';
+}
+
+export async function cacheReaderImageForPage(page: GalleryPage, onReady: (page: GalleryPage) => void,
+  gallery?: GalleryDetail, index?: number, abilityContext?: common.UIAbilityContext,
+  onError?: (message: string) => void, priority: number = IMAGE_DOWNLOAD_PRIORITY_READER,
+  options?: ImageDownloadOptions): Promise<void> {
+  const context = abilityContext !== undefined ? abilityContext : getAbilityContext();
+  if (context === undefined) {
+    if (onError !== undefined) {
+      onError('Ability context is not ready');
+    }
+    return Promise.resolve();
+  }
+
+  const previews: GalleryPreview[] = gallery === undefined ? [] : gallery.previewSet;
+  const preview = previews.find((item: GalleryPreview) => item.index === index);
+  let damagedDownload = '';
+  if (gallery !== undefined && index !== undefined) {
+    const downloadedPath = ehDownloadFileStore.findPageImage(context, gallery, index);
+    if (downloadedPath.length > 0 &&
+      await readerPageSourceGuard.isPreview(context, downloadedPath, preview, previews, page.pageUrl)) {
+      damagedDownload = downloadedPath;
+    } else if (downloadedPath.length > 0) {
+      onReady(cloneGalleryPageWithCache(page, downloadedPath));
+      return Promise.resolve();
+    }
+  }
+
+  if (page.imageUrl.length === 0) {
+    if (onError !== undefined) {
+      onError('Image URL missing');
+    }
+    return Promise.resolve();
+  }
+
+  try {
+    const cacheKey = readerPageImageCacheKey(page, false);
+    let path = readerImageCache.getCachedPath(context, page.imageUrl, cacheKey);
+    if (path.length > 0 && await readerPageSourceGuard.isPreview(context, path, preview, previews, page.pageUrl)) {
+      readerImageCache.removeCached(context, page.imageUrl, cacheKey);
+      path = '';
+    }
+    if (path.length === 0) {
+      path = await readerImageCache.ensureCached(context, page.imageUrl, page.pageUrl, priority, undefined,
+        cacheKey, options);
+    }
+    if (path.length === 0 || await readerPageSourceGuard.isPreview(context, path, preview, previews, page.pageUrl)) {
+      throw new Error('Full page image unavailable');
+    }
+    if (damagedDownload.length > 0) {
+      path = await readerPageSourceGuard.repairDownload(damagedDownload, path);
+    }
+    onReady(cloneGalleryPageWithCache(page, path));
+  } catch (error) {
+    if (onError !== undefined) {
+      onError(String(error));
+    }
+  }
+}
+
+export function readerPageImageCacheKey(page: GalleryPage, original: boolean = false): string {
+  if (page.pageUrl.length <= 0) {
+    return '';
+  }
+  return page.pageUrl + (original ? '#origin' : '#image');
+}
+
+function enqueueThumbnailReady(path: string, onReady: (path: string) => void): void {
+  THUMBNAIL_READY_QUEUE.push({ path: path, onReady: onReady });
+  scheduleThumbnailReadyDelivery();
+}
+
+function scheduleThumbnailReadyDelivery(): void {
+  if (thumbnailReadyScheduled) {
+    return;
+  }
+  thumbnailReadyScheduled = true;
+  setTimeout(() => {
+    thumbnailReadyScheduled = false;
+    const count = Math.min(THUMBNAIL_READY_BATCH_SIZE, THUMBNAIL_READY_QUEUE.length);
+    const batch = THUMBNAIL_READY_QUEUE.splice(0, count);
+    for (let i = 0; i < batch.length; i++) {
+      try {
+        batch[i].onReady(batch[i].path);
+      } catch (error) {
+      }
+    }
+    if (THUMBNAIL_READY_QUEUE.length > 0) {
+      scheduleThumbnailReadyDelivery();
+    }
+  }, THUMBNAIL_READY_BATCH_DELAY_MS);
+}
+
+function loadThumbnailPath(url: string): Promise<string> {
+  const context = getAbilityContext();
+  if (context === undefined || url.length === 0) {
+    return Promise.resolve('');
+  }
+  // 本地图档的缩略图是沙箱路径，没有可下载的来源。
+  if (url.indexOf('://') < 0) {
+    return Promise.resolve('');
+  }
+  return readerImageCache.ensureCached(context, url, EhUrl.getReferer(currentGallerySite()),
+    IMAGE_DOWNLOAD_PRIORITY_BACKGROUND, undefined, '', { retryLimit: THUMBNAIL_RETRY_LIMIT });
+}
+
+export function acquireThumbnailImage(url: string): GalleryThumbnailLease {
+  return galleryThumbnailDecodeCache.acquire(url, () => loadThumbnailPath(url));
+}
+
+// Prefetch includes asynchronous decoding, deduplicated before any disk lookup.
+export function cacheThumbnailImage(url: string, onReady?: (path: string) => void, onError?: () => void): void {
+  if (onReady === undefined && onError === undefined && url.length > 0) {
+    galleryThumbnailDecodeCache.prefetch(url, () => loadThumbnailPath(url));
+    return;
+  }
+  const context = getAbilityContext();
+  if (context === undefined || url.length === 0) {
+    if (onError !== undefined) {
+      onError();
+    }
+    return;
+  }
+
+  const existing = readerImageCache.getCachedPath(context, url);
+  if (existing.length > 0) {
+    if (onReady !== undefined) {
+      enqueueThumbnailReady(existing, onReady);
+    }
+    return;
+  }
+
+  readerImageCache.ensureCached(context, url, EhUrl.getReferer(currentGallerySite()),
+    IMAGE_DOWNLOAD_PRIORITY_BACKGROUND, undefined, '',
+    { retryLimit: THUMBNAIL_RETRY_LIMIT }).then((path: string) => {
+    if (path.length > 0) {
+      if (onReady !== undefined) {
+        enqueueThumbnailReady(path, onReady);
+      }
+    } else if (onError !== undefined) {
+      onError();
+    }
+  }).catch(() => {
+    if (onError !== undefined) {
+      onError();
+    }
+  });
+}
+
+export function cachePreviewThumbnail(preview: GalleryPreview, onReady: (path: string) => void,
+  onError?: () => void): void {
+  const context = getAbilityContext();
+  if (context === undefined || preview.imageUrl.length === 0) {
+    if (onError !== undefined) {
+      onError();
+    }
+    return;
+  }
+
+  const existing = previewThumbnailCache.getCroppedPath(context, preview);
+  if (existing.length > 0) {
+    enqueueThumbnailReady(existing, onReady);
+    return;
+  }
+
+  previewThumbnailCache.ensureCropped(context, preview, EhUrl.getReferer(currentGallerySite())).then((path: string) => {
+    if (path.length > 0) {
+      enqueueThumbnailReady(path, onReady);
+    } else if (onError !== undefined) {
+      onError();
+    }
+  }).catch(() => {
+    if (onError !== undefined) {
+      onError();
+    }
+  });
+}
+
+function cloneGalleryPageWithCache(page: GalleryPage, cachedPath: string): GalleryPage {
+  return {
+    pageUrl: page.pageUrl,
+    imageUrl: page.imageUrl,
+    skipHathKey: page.skipHathKey,
+    originImageUrl: page.originImageUrl,
+    showKey: page.showKey,
+    cachedImagePath: cachedPath,
+    cachedOriginImagePath: page.cachedOriginImagePath
+  };
+}
+
+export function readerLocalImageSource(path: string): string {
+  if (path.indexOf('://') >= 0) {
+    return path;
+  }
+  try {
+    return fileUri.getUriFromPath(path);
+  } catch (error) {
+    return 'file://' + path;
+  }
+}
+
+function localImagePathExists(path: string): boolean {
+  const localPath = path.startsWith('file://') ? path.substring('file://'.length) : path;
+  if (localPath.length === 0 || localPath.endsWith('.part')) {
+    return false;
+  }
+  try {
+    if (!fs.accessSync(localPath)) {
+      return false;
+    }
+    return fs.statSync(localPath).size > 0;
+  } catch (error) {
+    return false;
+  }
+}
+export function readerPreloadCount(): number {
+  const value = Number.parseInt(appSettingsStore.getValue('preload_image', '5'));
+  if (Number.isNaN(value) || value <= 0) {
+    return 0;
+  }
+  return Math.min(value, 20);
+}
+
+export function categoryName(category: number): string {
+  switch (category) {
+    case GalleryCategory.Misc:
+      return 'MISC';
+    case GalleryCategory.Doujinshi:
+      return 'DOUJINSHI';
+    case GalleryCategory.Manga:
+      return 'MANGA';
+    case GalleryCategory.ArtistCg:
+      return 'ARTIST CG';
+    case GalleryCategory.GameCg:
+      return 'GAME CG';
+    case GalleryCategory.ImageSet:
+      return 'IMAGE SET';
+    case GalleryCategory.Cosplay:
+      return 'COSPLAY';
+    case GalleryCategory.AsianPorn:
+      return 'ASIAN PORN';
+    case GalleryCategory.NonH:
+      return 'NON-H';
+    case GalleryCategory.Western:
+      return 'WESTERN';
+    default:
+      return 'UNKNOWN';
+  }
+}
+
+export function categoryDisplayName(category: number): string {
+  if (!shouldShowTagTranslations()) {
+    return categoryName(category);
+  }
+  switch (category) {
+    case GalleryCategory.Misc:
+      return '杂项';
+    case GalleryCategory.Doujinshi:
+      return '同人志';
+    case GalleryCategory.Manga:
+      return '漫画';
+    case GalleryCategory.ArtistCg:
+      return '艺术家 CG';
+    case GalleryCategory.GameCg:
+      return '游戏 CG';
+    case GalleryCategory.ImageSet:
+      return '图集';
+    case GalleryCategory.Cosplay:
+      return '角色扮演';
+    case GalleryCategory.AsianPorn:
+      return '亚洲色情';
+    case GalleryCategory.NonH:
+      return '非 H';
+    case GalleryCategory.Western:
+      return '西方';
+    default:
+      return '未知';
+  }
+}
+
+export function tagNamespaceDisplayName(namespace: string): string {
+  const normalized = namespace.trim().toLowerCase();
+  if (!shouldShowTagTranslations()) {
+    return normalized;
+  }
+  switch (normalized) {
+    case 'artist':
+      return '艺术家';
+    case 'group':
+      return '社团';
+    case 'parody':
+      return '原作';
+    case 'character':
+      return '角色';
+    case 'female':
+      return '女性';
+    case 'male':
+      return '男性';
+    case 'mixed':
+      return '混合';
+    case 'language':
+      return '语言';
+    case 'cosplayer':
+      return '角色扮演者';
+    case 'other':
+      return '其他';
+    case 'location':
+      return '地点';
+    case 'rows':
+      return '行数';
+    default:
+      return normalized;
+  }
+}
+
+export function tagTranslationOptionText(original: string, translated: string): string {
+  return shouldShowTagTranslations() ? translated : original;
+}
+
+export function categoryColor(category: number): string {
+  switch (category) {
+    case GalleryCategory.Doujinshi:
+      return '#B45F06';
+    case GalleryCategory.Manga:
+      return '#6A4FB3';
+    case GalleryCategory.ArtistCg:
+      return '#2F6F8F';
+    case GalleryCategory.GameCg:
+      return '#7A5A22';
+    case GalleryCategory.ImageSet:
+      return '#327A5B';
+    case GalleryCategory.Cosplay:
+      return '#A04462';
+    case GalleryCategory.AsianPorn:
+      return '#8A4F2B';
+    case GalleryCategory.NonH:
+      return '#4D6D8C';
+    case GalleryCategory.Western:
+      return '#556B2F';
+    case GalleryCategory.Misc:
+      return '#6B7280';
+    default:
+      return '#8A94A3';
+  }
+}
+export function galleryDisplayTitle(gallery: GalleryInfo): string {
+  if (appSettingsStore.getValue('show_jpn_title', 'Off') === 'On' &&
+    gallery.titleJpn !== undefined && gallery.titleJpn.length > 0) {
+    return decodeHtmlEntities(gallery.titleJpn);
+  }
+  if (gallery.title.length > 0) {
+    return decodeHtmlEntities(gallery.title);
+  }
+  if (gallery.titleJpn !== undefined && gallery.titleJpn.length > 0) {
+    return decodeHtmlEntities(gallery.titleJpn);
+  }
+  return 'Untitled';
+}
+
+export function showGalleryPages(): boolean {
+  return appSettingsStore.getValue('show_gallery_pages', 'On') === 'On';
+}
+
+export function showGalleryRating(): boolean {
+  return appSettingsStore.getValue('show_gallery_rating', 'On') === 'On';
+}
+
+export function showGalleryLanguage(): boolean {
+  return appSettingsStore.getValue('show_gallery_language', 'On') === 'On';
+}
+
+export function galleryListMode(): string {
+  return appSettingsStore.getValue('list_mode', 'Detail');
+}
+
+export function galleryThumbWidth(): number {
+  const value = appSettingsStore.getValue('thumb_size', 'Medium');
+  if (value === 'Small') {
+    return 70;
+  }
+  if (value === 'Large') {
+    return 104;
+  }
+  if (value === 'XLarge') {
+    return 124;
+  }
+  return 86;
+}
+
+export function galleryThumbnailPreferredColumnWidth(): number {
+  const thumbnailWidth = galleryThumbWidth();
+  if (thumbnailWidth <= 70) {
+    return 132;
+  }
+  if (thumbnailWidth >= 124) {
+    return 216;
+  }
+  if (thumbnailWidth >= 104) {
+    return 184;
+  }
+  return 156;
+}
+
+export function galleryDetailCardThumbWidth(): number {
+  const value = appSettingsStore.getValue('detail_size', 'Medium');
+  if (value === 'Compact') {
+    return 68;
+  }
+  if (value === 'Large' || value === 'Loose') {
+    return 98;
+  }
+  return 78;
+}
+
+export function galleryDetailCardBaseHeight(): number {
+  const value = appSettingsStore.getValue('detail_size', 'Medium');
+  const largeLayout = value === 'Large' || value === 'Loose';
+  if (value === 'Compact') {
+    return 98;
+  }
+  if (largeLayout) {
+    return 156;
+  }
+  return 122;
+}
+
+export function galleryDetailCardHeight(): number {
+  const value = appSettingsStore.getValue('detail_size', 'Medium');
+  const largeLayout = value === 'Large' || value === 'Loose';
+  const extendedHeight = galleryListMode() === 'Extended' ? (largeLayout ? 39 : 31) : 0;
+  return galleryDetailCardBaseHeight() + extendedHeight;
+}
+
+export function galleryDetailCardPreferredWidth(): number {
+  const value = appSettingsStore.getValue('detail_size', 'Medium');
+  if (value === 'Compact') {
+    return 300;
+  }
+  if (value === 'Large' || value === 'Loose') {
+    return 400;
+  }
+  return 340;
+}
+
+export function galleryDetailCardMinWidth(): number {
+  const value = appSettingsStore.getValue('detail_size', 'Medium');
+  if (value === 'Compact') {
+    return 260;
+  }
+  if (value === 'Large' || value === 'Loose') {
+    return 340;
+  }
+  return 300;
+}
+export function readerClockText(): string {
+  const now = new Date();
+  return padTimeNumber(now.getHours()) + ':' + padTimeNumber(now.getMinutes());
+}
+
+function padTimeNumber(value: number): string {
+  return value < 10 ? '0' + value.toString() : value.toString();
+}
+
+export function sortedStringKey(values: string[]): string {
+  return values.slice().sort().join('|');
+}
+
+export function toggleStringValue(values: string[], value: string): string[] {
+  const next = values.slice();
+  const index = next.indexOf(value);
+  if (index >= 0) {
+    next.splice(index, 1);
+  } else {
+    next.push(value);
+  }
+  return next;
+}
+
+// 诊断包文件名用的时间戳。SettingsSupport 与 ParseErrorBodyStore 各有一份，
+// 依赖的 padTwo 也各有拷贝，统一到这里的 padTwo。
+export function diagnosticTimestamp(now: Date): string {
+  return now.getFullYear().toString() + padTwo(now.getMonth() + 1) + padTwo(now.getDate()) + '_' +
+    padTwo(now.getHours()) + padTwo(now.getMinutes()) + padTwo(now.getSeconds());
+}
