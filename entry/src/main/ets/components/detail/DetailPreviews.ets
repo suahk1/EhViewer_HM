@@ -1,0 +1,436 @@
+﻿import { GalleryPreview } from '../../model/GalleryModels';
+import { mainContentWidthFallbackVp } from '../../services/WindowChromeController';
+import {
+  cachePreviewThumbnail,
+  createEmptyPreview,
+  readerLocalImageSource,
+  uiText
+} from '../../shared/AppRuntime';
+import {
+  themeAccentTextColor,
+  themePlaceholderColor,
+  themeOnPrimaryText,
+  themePrimaryColor,
+  themePrimaryText,
+  themeSecondaryText,
+  themeSurface,
+  themeSurfaceVariant
+} from '../../shared/AppPalette';
+import {
+  uiButtonMaterial,
+  uiTransparentButtonBackgroundEffect,
+  uiDialogBlurOptions,
+  uiDialogBlurStyle,
+  uiDialogMaterial,
+  uiDialogSurfaceBackground,
+  uiDialogSurfaceRadius,
+  uiDialogSurfaceShadow,
+  uiMaterialForegroundColor,
+  uiRadius,
+  uiMaterialBackground
+} from '../../shared/AppSurfaceStyle';
+import { GalleryThumb } from '../GalleryCards';
+import { PopupScrim } from '../PopupScrim';
+import { DetailSectionRetry } from './DetailSectionRetry';
+
+const PREVIEW_THUMB_LOCAL_SOURCE_CACHE: Map<string, string> = new Map<string, string>();
+
+@Component
+export struct DetailPreviews {
+  @Prop previews: GalleryPreview[] = [];
+  @Prop previewPages: number = 0;
+  @Prop totalPages: number = 0;
+  @Prop isDetailLoaded: boolean = false;
+  @Prop sectionFailed: boolean = false;
+  @Prop sectionMessage: string = '';
+  onSelectPreview: (preview: GalleryPreview) => void = () => {};
+  onOpenJumpPanel: () => void = () => {};
+  onRetrySection: () => void = () => {};
+  @State contentWidth: number = 0;
+
+  private previewGap(): number {
+    return 8;
+  }
+
+  private previewColumns(): number {
+    const available = Math.max(0, this.contentWidth - 32);
+    if (available <= 0 || Number.isNaN(available)) {
+      return 2;
+    }
+    const preferred = 132;
+    const gap = this.previewGap();
+    return Math.max(2, Math.floor((available + gap) / (preferred + gap)));
+  }
+
+  private previewTileWidth(): number {
+    const available = Math.max(0, this.contentWidth - 32);
+    const columns = this.previewColumns();
+    const gap = this.previewGap();
+    if (available <= 0 || Number.isNaN(available)) {
+      return 132;
+    }
+    return Math.max(112, Math.floor((available - gap * (columns - 1)) / columns));
+  }
+
+  private previewTileHeight(): number {
+    return Math.round(this.previewTileWidth() * 4 / 3);
+  }
+
+  private previewTotalPages(): number {
+    if (this.totalPages > 0) {
+      return this.totalPages;
+    }
+    return this.previewPages;
+  }
+
+  private syncContentWidthFromWindow(): void {
+    const width = mainContentWidthFallbackVp((value: number) => this.getUIContext().px2vp(value));
+    if (width >= 240) {
+      this.contentWidth = width;
+    }
+  }
+
+  build() {
+    Column() {
+      Text(uiText('Previews'))
+        .fontSize(15)
+        .fontWeight(FontWeight.Medium)
+        .fontColor(themePrimaryText())
+        .width('100%')
+      Text(this.sectionFailed ? uiText('Previews unavailable') :
+        (!this.isDetailLoaded ? uiText('Loading previews...') :
+          uiText(this.previews.length.toString() + ' thumbnails / ' + this.previewTotalPages().toString() + ' pages')))
+        .fontSize(12)
+        .fontColor(this.isDetailLoaded && this.previewTotalPages() > 1 ?
+          themeAccentTextColor() : themeSecondaryText())
+        .width('100%')
+        .margin({ top: 6, bottom: 8 })
+        .onClick(() => {
+          if (this.isDetailLoaded && this.previewTotalPages() > 1) {
+            this.onOpenJumpPanel();
+          }
+        })
+      if (this.sectionFailed) {
+        DetailSectionRetry({
+          sectionTitle: 'Previews',
+          message: this.sectionMessage,
+          onRetry: () => {
+            this.onRetrySection();
+          }
+        })
+      } else if (this.isDetailLoaded && this.previews.length === 0) {
+        Text(uiText('No previews'))
+          .fontSize(12)
+          .fontColor(themeSecondaryText())
+      } else if (!this.isDetailLoaded && this.previews.length === 0) {
+        Row({ space: 8 }) {
+          LoadingProgress()
+            .width(24)
+            .height(24)
+            .color(themePlaceholderColor())
+          Text(uiText('Loading previews...'))
+            .fontSize(12)
+            .fontColor(themeSecondaryText())
+        }
+        .width('100%')
+        .height(52)
+        .justifyContent(FlexAlign.Center)
+      } else {
+        Flex({ wrap: FlexWrap.Wrap }) {
+          ForEach(this.previews, (preview: GalleryPreview, index: number) => {
+            PreviewTile({
+              preview: preview,
+              tileWidth: this.previewTileWidth(),
+              imageHeight: this.previewTileHeight(),
+              onSelectPreview: (selected: GalleryPreview) => {
+                this.onSelectPreview(selected);
+              }
+            })
+              .margin({
+                right: (index + 1) % this.previewColumns() === 0 ? 0 : this.previewGap(),
+                bottom: 12
+              })
+          }, (preview: GalleryPreview, index: number) => index.toString() + ':' + preview.index.toString() + ':' +
+            preview.imageUrl)
+        }
+        .width('100%')
+      }
+    }
+    .alignItems(HorizontalAlign.Start)
+    .width('100%')
+    .padding(16)
+    .backgroundColor(themeSurface())
+    .onAppear(() => {
+      this.syncContentWidthFromWindow();
+    })
+    .onAreaChange((_oldArea: Area, newArea: Area) => {
+      const width = Math.floor(newArea.width as number);
+      if (width > 0 && !Number.isNaN(width) && Math.abs(this.contentWidth - width) >= 1) {
+        this.contentWidth = width;
+      }
+    })
+  }
+}
+
+@Component
+export struct DetailPreviewJumpOverlay {
+  @State popupWidth: number = 0;
+  @State popupHeight: number = 0;
+  @Prop totalPages: number = 0;
+  @Prop initialPageIndex: number = 0;
+  @State draftPageIndex: number = 0;
+  onClose: (pageIndex: number) => void = (_pageIndex: number) => {};
+
+  aboutToAppear(): void {
+    this.syncDraftPage();
+  }
+
+  private syncDraftPage(): void {
+    const maxIndex = Math.max(0, this.totalPages - 1);
+    this.draftPageIndex = Math.max(0, Math.min(this.initialPageIndex, maxIndex));
+  }
+
+  private closeWithSelection(): void {
+    const maxIndex = Math.max(0, this.totalPages - 1);
+    this.onClose(Math.max(0, Math.min(this.draftPageIndex, maxIndex)));
+  }
+
+  build() {
+    Stack({ alignContent: Alignment.Center }) {
+      PopupScrim({
+        showCutout: this.popupWidth > 0 && this.popupHeight > 0,
+        cutoutWidth: this.popupWidth,
+        cutoutHeight: this.popupHeight,
+        cutoutRadius: uiDialogSurfaceRadius(),
+        onDismiss: () => {
+          this.closeWithSelection();
+        }
+      })
+
+      Column() {
+        Text(uiText('Jump'))
+          .fontSize(18)
+          .fontWeight(FontWeight.Medium)
+          .fontColor(themePrimaryText())
+          .width('100%')
+        Text(uiText('Page') + ' ' + (this.draftPageIndex + 1).toString() + ' / ' +
+          Math.max(1, this.totalPages).toString())
+          .fontSize(15)
+          .fontColor(themeSecondaryText())
+          .width('100%')
+          .margin({ top: 12, bottom: 12 })
+        Slider({
+          value: this.draftPageIndex,
+          min: 0,
+          max: Math.max(0, this.totalPages - 1),
+          step: 1,
+          style: SliderStyle.OutSet
+        })
+          .blockColor(themeAccentTextColor())
+          .selectedColor(themeAccentTextColor())
+          .trackColor(themeSurfaceVariant())
+          .enabled(this.totalPages > 1)
+          .onChange((value: number, _mode: SliderChangeMode) => {
+            this.draftPageIndex = Math.round(value);
+          })
+        Button(uiText('Close'), { type: ButtonType.Normal, stateEffect: true })
+          .height(38)
+          .fontSize(14)
+          .fontColor(uiMaterialForegroundColor(themeOnPrimaryText()))
+          .backgroundColor(uiMaterialBackground(themePrimaryColor()))
+          .margin({ top: 16 })
+          .width('100%')
+          .borderRadius(uiRadius(6))
+          .backgroundEffect(uiTransparentButtonBackgroundEffect())
+          .systemMaterial(uiButtonMaterial())
+          .onClick(() => {
+            this.closeWithSelection();
+          })
+      }
+      .width('86%')
+      .constraintSize({ maxWidth: 420 })
+      .padding(18)
+      .backgroundColor(uiMaterialBackground(uiDialogSurfaceBackground()))
+      .shadow(uiDialogSurfaceShadow())
+      .borderRadius(uiDialogSurfaceRadius())
+      .backgroundBlurStyle(uiDialogBlurStyle(), uiDialogBlurOptions())
+      .systemMaterial(uiDialogMaterial())
+      .onAreaChange((_oldArea: Area, newArea: Area) => {
+        this.popupWidth = Number.parseFloat(newArea.width.toString());
+        this.popupHeight = Number.parseFloat(newArea.height.toString());
+      })
+    }
+    .width('100%')
+    .height('100%')
+  }
+}
+
+@Component
+export struct PreviewRow {
+  @Prop preview: GalleryPreview = createEmptyPreview();
+  onSelectPreview: (preview: GalleryPreview) => void = () => {};
+
+  build() {
+    Row() {
+      GalleryThumb({
+        url: this.preview.imageUrl,
+        widthValue: 74,
+        heightValue: 54
+      })
+      Column() {
+        Text(uiText('Page') + ' ' + (this.preview.index + 1).toString())
+          .fontSize(13)
+          .fontWeight(FontWeight.Medium)
+          .fontColor(themePrimaryText())
+        Text(this.preview.pageUrl)
+          .fontSize(11)
+          .fontColor(themeSecondaryText())
+          .maxLines(1)
+          .textOverflow({ overflow: TextOverflow.Ellipsis })
+          .margin({ top: 5 })
+      }
+      .alignItems(HorizontalAlign.Start)
+      .layoutWeight(1)
+      .margin({ left: 10 })
+    }
+    .width('100%')
+    .margin({ top: 8 })
+    .onClick(() => {
+      this.onSelectPreview(this.preview);
+    })
+  }
+}
+
+@Component
+export struct PreviewTile {
+  @Prop preview: GalleryPreview = createEmptyPreview();
+  @Prop tileWidth: number = 132;
+  @Prop imageHeight: number = 96;
+  onSelectPreview: (preview: GalleryPreview) => void = () => {};
+
+  build() {
+    Column() {
+      PreviewThumb({
+        preview: this.preview,
+        widthValue: this.tileWidth,
+        heightValue: this.imageHeight,
+        radiusValue: 4
+      })
+      Text((this.preview.index + 1).toString())
+        .fontSize(11)
+        .fontColor(themeSecondaryText())
+        .margin({ top: 6 })
+    }
+    .width(this.tileWidth)
+    .padding({ bottom: 2 })
+    .alignItems(HorizontalAlign.Center)
+    .onClick(() => {
+      this.onSelectPreview(this.preview);
+    })
+  }
+}
+
+@Component
+export struct PreviewThumb {
+  @Prop @Watch('onPreviewChange') preview: GalleryPreview = createEmptyPreview();
+  @Prop widthValue: number = 132;
+  @Prop heightValue: number = 96;
+  @Prop radiusValue: number = 4;
+  @State localUrl: string = '';
+  @State loadFailed: boolean = false;
+  private cachedUrl: string = '';
+
+  aboutToAppear(): void {
+    if (this.preview.imageUrl.length > 0) {
+      this.cacheThumb();
+    } else {
+      this.loadFailed = true;
+    }
+  }
+
+  onPreviewChange(): void {
+    if (this.preview.imageUrl.length > 0) {
+      this.cacheThumb();
+    } else {
+      this.cachedUrl = '';
+      this.localUrl = '';
+      this.loadFailed = true;
+    }
+  }
+
+  private cacheThumb(): void {
+    const cacheKey = this.preview.imageUrl + '#' + this.preview.xOffset.toString() + ',' +
+      this.preview.yOffset.toString() + ',' + this.preview.width.toString() + 'x' + this.preview.height.toString();
+    if (this.preview.imageUrl.length === 0 ||
+      (cacheKey === this.cachedUrl && (this.localUrl.length > 0 || this.loadFailed))) {
+      return;
+    }
+    this.cachedUrl = cacheKey;
+    const cachedLocalSource = PREVIEW_THUMB_LOCAL_SOURCE_CACHE.get(cacheKey);
+    this.localUrl = cachedLocalSource === undefined ? '' : cachedLocalSource;
+    this.loadFailed = false;
+    if (this.localUrl.length > 0) {
+      return;
+    }
+    cachePreviewThumbnail(this.preview, (localPath: string) => {
+      if (this.cachedUrl !== cacheKey) {
+        return;
+      }
+      if (localPath.length > 0) {
+        this.localUrl = readerLocalImageSource(localPath);
+        PREVIEW_THUMB_LOCAL_SOURCE_CACHE.set(cacheKey, this.localUrl);
+        this.loadFailed = false;
+      }
+    }, () => {
+      if (this.cachedUrl === cacheKey) {
+        this.localUrl = '';
+        this.loadFailed = true;
+      }
+    });
+  }
+
+  build() {
+    Stack() {
+      Column()
+        .width('100%')
+        .height('100%')
+        .backgroundColor(themeSurfaceVariant())
+        .borderRadius(uiRadius(this.radiusValue))
+
+      if (this.loadFailed) {
+        Column({ space: 4 }) {
+          SymbolGlyph($r('sys.symbol.xmark'))
+            .fontSize(20)
+            .fontColor([themePlaceholderColor()])
+          Text((this.preview.index + 1).toString())
+            .fontSize(10)
+            .fontColor(themePlaceholderColor())
+        }
+        .justifyContent(FlexAlign.Center)
+        .onClick(() => {
+          this.cachedUrl = '';
+          this.cacheThumb();
+        })
+      } else if (this.localUrl.length > 0) {
+        Image(this.localUrl)
+          .width('100%')
+          .height('100%')
+          .objectFit(ImageFit.Cover)
+          .syncLoad(false)
+          .onError(() => {
+            this.loadFailed = true;
+          })
+      } else {
+        LoadingProgress()
+          .width(28)
+          .height(28)
+          .color(themePlaceholderColor())
+      }
+    }
+    .width(this.widthValue)
+    .height(this.heightValue)
+    .clip(true)
+    .borderRadius(uiRadius(this.radiusValue))
+  }
+}
+

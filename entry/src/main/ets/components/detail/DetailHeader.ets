@@ -1,0 +1,260 @@
+﻿import { GalleryDetail } from '../../model/GalleryModels';
+import {
+  categoryColor,
+  categoryDisplayName,
+  createEmptyDetail,
+  galleryDisplayTitle,
+  uiStatusText,
+  uiText
+} from '../../shared/AppRuntime';
+import {
+  themeDangerBackground,
+  themeDangerText,
+  themeDividerColor,
+  themeInfoBackground,
+  themeInfoText,
+  themeAccentTextColor,
+  themeOnPrimaryText,
+  themePrimaryColor,
+  themePrimaryText,
+  themeSecondaryText,
+  themeSurface,
+  themeSurfaceVariant
+} from '../../shared/AppPalette';
+import {
+  uiButtonHighlightBorderColor,
+  uiButtonMaterial,
+  uiTransparentButtonBackgroundEffect,
+  uiMaterialBackground,
+  uiMaterialForegroundColor,
+  uiRadius
+} from '../../shared/AppSurfaceStyle';
+import { GalleryThumb, galleryThumbnailAspectRatio } from '../GalleryCards';
+import { copyTextToClipboard } from './DetailInfo';
+import { TranslationText } from '../TranslationComponents';
+@Component
+export struct DetailHeader {
+  @Prop @Watch('onDetailChange') detail: GalleryDetail = createEmptyDetail();
+  @Prop downloadText: string = 'Download';
+  @Prop translateTitle: boolean = false;
+  onDownload: () => void = () => {};
+  onRead: () => void = () => {};
+  onUploaderSearch: () => void = () => {};
+  onCategorySearch: () => void = () => {};
+  @State coverAspectRatio: number = 0.75;
+
+  aboutToAppear(): void {
+    this.syncCoverAspectRatio();
+  }
+
+  onDetailChange(): void {
+    this.syncCoverAspectRatio();
+  }
+
+  private syncCoverAspectRatio(): void {
+    this.coverAspectRatio = galleryThumbnailAspectRatio(this.detail);
+  }
+
+  private updateCoverAspectRatio(aspectRatio: number): void {
+    if (Math.abs(this.coverAspectRatio - aspectRatio) < 0.001) {
+      return;
+    }
+    this.coverAspectRatio = aspectRatio;
+  }
+
+  build() {
+    Column() {
+      Row({ space: 10 }) {
+        GalleryThumb({
+          url: this.detail.thumb === undefined ? '' : this.detail.thumb,
+          widthValue: 0,
+          heightValue: 0,
+          onImageAspectRatio: (aspectRatio: number) => {
+            this.updateCoverAspectRatio(aspectRatio);
+          }
+        })
+          .width(this.detailThumbWidth())
+          .aspectRatio(this.coverAspectRatio)
+        Column() {
+          TranslationText({
+            sourceText: galleryDisplayTitle(this.detail),
+            translationEnabled: this.translateTitle,
+            fontSizeValue: 18,
+            fontWeightValue: FontWeight.Bold,
+            fontColorValue: themePrimaryText(),
+            lineHeightValue: 24,
+            maxLinesValue: 5
+          })
+            .onClick(() => {
+              copyTextToClipboard(galleryDisplayTitle(this.detail), this.getUIContext());
+            })
+          Text(this.detail.uploader === undefined || this.detail.uploader.length === 0 ? uiText('unknown uploader') :
+            this.detail.uploader)
+            .fontSize(15)
+            .fontWeight(FontWeight.Medium)
+            .fontColor(themeSecondaryText())
+            .margin({ top: 8 })
+            .onClick(() => {
+              this.onUploaderSearch();
+            })
+          DetailCategoryBadge({
+            category: this.detail.category,
+            onTap: this.onCategorySearch
+          })
+            .margin({ top: 12 })
+
+          Row() {
+            HeaderActionButton({
+              symbolIcon: this.downloadIcon(),
+              text: uiText(this.downloadText),
+              onTap: this.onDownload
+            })
+              .width('48%')
+            HeaderActionButton({
+              symbolIcon: $r('sys.symbol.play_fill'),
+              text: uiText('Read'),
+              accent: true,
+              onTap: this.onRead
+            })
+              .width('48%')
+          }
+          .width('100%')
+          .justifyContent(FlexAlign.SpaceBetween)
+          .margin({ top: 16 })
+        }
+        .layoutWeight(1)
+        .alignItems(HorizontalAlign.Start)
+        .margin({ left: 14 })
+      }
+      .width('100%')
+    }
+    .width('100%')
+    .padding(16)
+    .backgroundColor(themeSurface())
+  }
+
+  private downloadIcon(): Resource {
+    if (this.downloadText === 'Downloaded') {
+      return $r('sys.symbol.checkmark');
+    }
+    if (this.downloadText === 'Waiting' || this.downloadText === 'Downloading') {
+      return $r('sys.symbol.pause_fill');
+    }
+    return $r('sys.symbol.save');
+  }
+
+  private detailThumbWidth(): number {
+    return 128;
+  }
+}
+
+@Component
+struct DetailCategoryBadge {
+  @Prop category: number = 0;
+  onTap: () => void = () => {};
+
+  build() {
+    Text(categoryDisplayName(this.category))
+      .fontSize(14)
+      .fontWeight(FontWeight.Bold)
+      .fontColor(Color.White)
+      .height(28)
+      .padding({ left: 11, right: 11, top: 3, bottom: 3 })
+      .backgroundColor(categoryColor(this.category))
+      .borderRadius(uiRadius(5))
+      .onClick(() => {
+        this.onTap();
+      })
+  }
+}
+
+@Component
+export struct HeaderActionButton {
+  @Prop symbolIcon: Resource = $r('sys.symbol.play_fill');
+  @Prop text: string = '';
+  @Prop accent: boolean = false;
+  onTap: () => void = () => {};
+  @State pressed: boolean = false;
+
+  private buttonBackground(): string {
+    return this.accent ? themePrimaryColor() : themeSurfaceVariant();
+  }
+
+  private contentColor(): string {
+    return this.accent ? themeOnPrimaryText() : themePrimaryText();
+  }
+
+  build() {
+    Row() {
+      SymbolGlyph(this.symbolIcon)
+        .fontSize(22)
+        .fontColor([uiMaterialForegroundColor(this.contentColor())])
+      Text(this.text)
+        .fontSize(14)
+        .fontWeight(FontWeight.Bold)
+        .fontColor(uiMaterialForegroundColor(this.contentColor()))
+        .margin({ left: 10 })
+    }
+    .justifyContent(FlexAlign.Center)
+    .alignItems(VerticalAlign.Center)
+    .height(46)
+    .width('100%')
+    .backgroundColor(uiMaterialBackground(this.buttonBackground()))
+    .animation({ duration: 120, curve: Curve.EaseOut })
+    .scale({ x: this.pressed ? 0.96 : 1, y: this.pressed ? 0.96 : 1 })
+    .shadow({
+      radius: this.pressed ? 2 : 6,
+      color: '#22000000',
+      offsetX: 0,
+      offsetY: this.pressed ? 1 : 2
+    })
+    .border({
+      width: 1,
+      color: this.accent ? uiButtonHighlightBorderColor() : themeDividerColor()
+    })
+    .borderRadius(uiRadius(23))
+    .backgroundEffect(uiTransparentButtonBackgroundEffect())
+    .systemMaterial(uiButtonMaterial())
+    .onTouch((event: TouchEvent) => {
+      if (event.type === TouchType.Down) {
+        this.pressed = true;
+      } else if (event.type === TouchType.Up || event.type === TouchType.Cancel) {
+        this.pressed = false;
+      }
+    })
+    .onClick(() => {
+      this.onTap();
+    })
+  }
+}
+
+@Component
+export struct DetailLoadStatus {
+  @Prop statusText: string = '';
+  @Prop isError: boolean = false;
+
+  build() {
+    Row() {
+      if (!this.isError) {
+        LoadingProgress()
+          .width(18)
+          .height(18)
+          .color(themeAccentTextColor())
+          .margin({ right: 10 })
+      } else {
+        SymbolGlyph($r('sys.symbol.exclamationmark_circle'))
+          .fontSize(18)
+          .fontColor([themeDangerText()])
+          .margin({ right: 10 })
+      }
+      Text(uiStatusText(this.statusText))
+        .fontSize(12)
+        .fontColor(this.isError ? themeDangerText() : themeInfoText())
+        .layoutWeight(1)
+    }
+    .width('100%')
+    .padding({ left: 16, right: 16, top: 10, bottom: 10 })
+    .backgroundColor(this.isError ? themeDangerBackground() : themeInfoBackground())
+  }
+}
+

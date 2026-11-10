@@ -1,0 +1,11 @@
+import { image } from '@kit.ImageKit';
+
+export const isSdrToHdrSupported: () => boolean;
+export const createCompatibleSdrPixelMap: (source: image.PixelMap) => Promise<image.PixelMap>;
+export const createScaledCompatibleSdrPixelMap: (source: image.PixelMap, width: number,
+  height: number) => Promise<image.PixelMap>;
+export const createDmaHdrPixelMap: (width: number, height: number) => image.PixelMap;
+export const convertSdrToHdr: (source: image.PixelMap, destination: image.PixelMap) => Promise<number>;
+export const adjustPixelMap: (source: image.PixelMap, contrast: number, clarity: number, sharpening: number,
+  exposure: number, brightness: number, highlights: number, shadows: number, hue: number, saturation: number,
+  vibrance: number, temperature: number, grayscale: number) => Promise<number>;

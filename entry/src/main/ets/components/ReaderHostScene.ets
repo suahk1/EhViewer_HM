@@ -1,0 +1,1252 @@
+import { common } from '@kit.AbilityKit';
+import { GalleryDetail, GalleryPage, GalleryPreview, GallerySite } from '../model/GalleryModels';
+import { ReaderPageTranslation, cloneReaderPageTranslation } from '../model/ReaderTranslationModels';
+import { READER_ABILITY_CONTEXT_KEY } from '../entryability/ReaderAbility';
+import { EhHttpClient, GalleryDetailLoadResult, GalleryPageLoadResult } from '../services/EhHttpClient';
+import { ehDownloadFileStore } from '../services/EhDownloadFileStore';
+import { ehDownloadStore } from '../services/EhDownloadStore';
+import { cloudGalleryPageService } from '../services/CloudGalleryPageService';
+import { readerCloudPageWithFallback } from '../services/ReaderLoadingRecovery';
+import { readerImageRequestControl } from '../services/ReaderImageRequestControl';
+import { appSettingsStore } from '../services/AppSettingsStore';
+import { galleryPageCache } from '../services/GalleryPageCache';
+import { cloudReaderImageKey, readerPageSourceGuard } from '../services/ReaderPageSourceGuard';
+import {
+  createReaderSessionState,
+  readerSessionStore,
+  ReaderSessionPageState,
+  READER_SESSION_REVISION_KEY
+} from '../services/ReaderSessionStore';
+import { readerComicTranslationService } from '../services/ReaderComicTranslationService';
+import { readerOcrDebugLog } from '../services/ReaderOcrDebugLog';
+import { cancelQueuedReaderImageRequests, IMAGE_DOWNLOAD_PRIORITY_READER, readerImageCache } from '../services/ReaderImageCache';
+import {
+  cacheReaderImageForPage,
+  cloneGalleryDetail,
+  cloneGalleryPage,
+  cloneGalleryPreviews,
+  createEmptyDetail,
+  createEmptyPage,
+  createReaderLoadingPage,
+  downloadThreadLimit,
+  getAbilityContext,
+  readerPageReferer,
+  readerPreloadCount,
+  readerStartIndex,
+  readerStartIndexAsync,
+  saveGalleryReadPosition
+} from '../shared/AppRuntime';
+import { ReaderPageState, ReaderScene } from './ReaderScenes';
+import { ReaderSourceImageSize, readReaderSourceImageSize } from './reader/core/ReaderCore';
+
+const READER_IMAGE_SERVER_ATTEMPT_LIMIT: number = 5;
+
+@Component
+export struct ReaderSessionScene {
+  private client: EhHttpClient = new EhHttpClient();
+  restoreAppChromeOnExit: boolean = false;
+  onBack: () => void = () => {};
+
+  @State detail: GalleryDetail = createEmptyDetail();
+  @State page: GalleryPage = createEmptyPage();
+  @State statusText: string = 'Reader is ready';
+  @State detailRequestUrl: string = '';
+  @State listRequestUrl: string = '';
+  @State site: GallerySite = GallerySite.E;
+  @State pageIndex: number = 0;
+  @State renderVersion: number = 0;
+  @State readerPages: ReaderPageState[] = [];
+  @State readerTranslations: ReaderPageTranslation[] = [];
+  @State comicTranslationActive: boolean = false;
+  @State comicTranslationNotice: string = '';
+  @State comicTranslationNoticeRevision: number = 0;
+  @StorageProp(READER_SESSION_REVISION_KEY) @Watch('onSessionRevisionChange') sessionRevision: number = 0;
+  private loadedSessionRevision: number = -1;
+  private readerPreviewMap: Map<number, GalleryPreview> = new Map();
+  private readerPreviewPageRequests: Map<number, Promise<GalleryPreview | null>> = new Map();
+  private readerPageLoadRequests: Map<string, Promise<GalleryPageLoadResult>> = new Map();
+  private readerImageRecoveryRequests: Map<string, Promise<void>> = new Map();
+  private readerPreviewPageSize: number = 0;
+  private readerTranslationLoads: string[] = [];
+  private readerTranslationLoadPriorities: Map<string, number> = new Map();
+  private readerTranslationRefreshing: number[] = [];
+  private readerTranslationScope: string = '';
+  private readerPreloadRevision: number = 0;
+  private readerSceneActive: boolean = false;
+  private readerSettingsReady: boolean = false;
+  private readerImageWindowOwner: number = readerImageRequestControl.createOwner();
+  private readerVisiblePageIndexes: number[] = [];
+  private downloadedImageSizes: Map<string, Promise<ReaderSourceImageSize>> = new Map();
+
+  aboutToAppear(): void {
+    this.readerSceneActive = true;
+    const context = this.readerContext();
+    if (context === undefined) {
+      this.readerSettingsReady = true;
+      this.loadCurrentSession();
+      return;
+    }
+    appSettingsStore.ensureLoaded(context).finally(() => {
+      if (!this.readerSceneActive) {
+        return;
+      }
+      this.readerSettingsReady = true;
+      this.loadCurrentSession();
+    });
+  }
+
+  onSessionRevisionChange(): void {
+    if (!this.readerSettingsReady || this.sessionRevision === this.loadedSessionRevision) {
+      return;
+    }
+    this.loadCurrentSession();
+  }
+
+  private loadCurrentSession(): void {
+    this.readerPreloadRevision++;
+    this.renewReaderTranslationScope();
+    const session = readerSessionStore.getSession();
+    if (session === null || session.detail.gid <= 0) {
+      this.statusText = 'Reader session is empty';
+      this.renderVersion++;
+      return;
+    }
+    this.loadedSessionRevision = this.sessionRevision;
+    this.readerPreviewMap.clear();
+    this.readerPreviewPageRequests.clear();
+    this.readerPageLoadRequests.clear();
+    this.readerImageRecoveryRequests.clear();
+    this.downloadedImageSizes.clear();
+    this.readerPreviewPageSize = 0;
+    this.readerTranslationLoads = [];
+    this.readerTranslationLoadPriorities.clear();
+    this.readerTranslationRefreshing = [];
+    this.readerTranslations = [];
+    // 设置里的「漫画翻译」是持久开关，进入阅读器必须按它决定是否启用：
+    // 这里原来固定写 false，导致用户打开开关后进阅读器始终没有译文，
+    // 必须再手动点一次浮动按钮才会生效。
+    this.comicTranslationActive = appSettingsStore.getValue('reader_translation_enabled', 'Off') === 'On';
+    this.detail = cloneGalleryDetail(session.detail);
+    this.statusText = session.statusText;
+    this.detailRequestUrl = session.detailRequestUrl;
+    this.listRequestUrl = session.listRequestUrl;
+    this.site = session.site;
+    const usesSavedPosition = session.pageIndex < 0;
+    this.pageIndex = usesSavedPosition ? readerStartIndex(this.detail) : session.pageIndex;
+    this.updateReaderImageWindow([this.pageIndex]);
+    this.seedReaderPreviewCache(this.detail.previewSet);
+    this.readerPages = this.cloneSessionReaderPages(session.pages);
+    const restoredPage = this.restoredPageForIndex(session.page, this.pageIndex);
+    this.page = restoredPage === null ? createEmptyPage() : restoredPage;
+    if (this.page.imageUrl.length > 0 || this.page.pageUrl.length > 0 ||
+      (this.page.cachedImagePath !== undefined && this.page.cachedImagePath.length > 0)) {
+      this.setReaderPage(this.pageIndex, this.page);
+    }
+    this.renderVersion++;
+    if (usesSavedPosition) {
+      readerStartIndexAsync(this.detail).then((index: number) => {
+        if (index !== this.pageIndex) {
+          this.pageIndex = index;
+          this.page = createEmptyPage();
+          this.renderVersion++;
+        }
+        this.loadReaderPageByIndex(index);
+      }).catch(() => {
+        this.loadReaderPageByIndex(this.pageIndex);
+      });
+      return;
+    }
+    if (this.page.imageUrl.length === 0 &&
+      (this.page.cachedImagePath === undefined || this.page.cachedImagePath.length === 0)) {
+      this.loadReaderPageByIndex(this.pageIndex);
+    } else {
+      const restoredIndex = this.pageIndex;
+      const restoredPage = this.page;
+      this.tryUseCloudPage(restoredIndex).then((used: boolean) => {
+        if (!used && this.readerSceneActive) {
+          this.cacheReaderImage(restoredIndex, restoredPage);
+        }
+      }).catch(() => {
+        this.cacheReaderImage(restoredIndex, restoredPage);
+      }).finally(() => {
+        if (this.readerSceneActive && this.pageIndex === restoredIndex) {
+          this.preloadReaderPages(restoredIndex);
+        }
+      });
+    }
+  }
+
+  aboutToDisappear(): void {
+    this.readerSceneActive = false;
+    readerImageRequestControl.clear(this.readerImageWindowOwner);
+    this.readerPreloadRevision++;
+    cancelQueuedReaderImageRequests();
+    this.cancelReaderTranslationScope();
+    this.persistSession();
+  }
+
+  private persistSession(): void {
+    readerSessionStore.updateSession(createReaderSessionState(this.detail, this.page, this.statusText,
+      this.detailRequestUrl, this.listRequestUrl, this.site, this.pageIndex, this.readerPages));
+  }
+
+  private readerDownloadGalleryDir(): string {
+    const context = getAbilityContext();
+    if (context === undefined || this.detail.gid <= 0 || this.detail.token.length === 0) {
+      return '';
+    }
+    return ehDownloadFileStore.galleryDirectory(context, this.detail);
+  }
+
+  private closeReader(): void {
+    if (this.restoreAppChromeOnExit) {
+      this.onBack();
+      return;
+    }
+    const context = AppStorage.get<common.UIAbilityContext>(READER_ABILITY_CONTEXT_KEY);
+    if (context !== undefined) {
+      context.terminateSelf().catch(() => {});
+    }
+  }
+
+  private readerContext(): common.UIAbilityContext | undefined {
+    const readerContext = AppStorage.get<common.UIAbilityContext>(READER_ABILITY_CONTEXT_KEY);
+    if (readerContext !== undefined) {
+      return readerContext;
+    }
+    return getAbilityContext();
+  }
+
+  private async loadReaderPage(preview: GalleryPreview): Promise<void> {
+    const galleryId = this.detail.gid;
+    this.readerPreviewMap.set(preview.index, preview);
+    this.pageIndex = preview.index;
+    this.updateReaderImageWindowForIndex(preview.index);
+    this.readerPreloadRevision++;
+    saveGalleryReadPosition(this.detail.gid, preview.index, this.detail);
+    this.statusText = 'Loading page ' + (preview.index + 1).toString() + '...';
+    this.page = createReaderLoadingPage(preview.pageUrl);
+    this.setReaderPage(preview.index, this.page);
+    this.renderVersion++;
+    if (this.comicTranslationActive) {
+      this.requestReaderTranslationWindow(false);
+    }
+    if (await this.tryUseDownloadedPage(preview.index, preview)) {
+      this.preloadReaderPages(this.pageIndex);
+      this.persistSession();
+      return;
+    }
+    if (!this.readerSceneActive || this.detail.gid !== galleryId) {
+      return;
+    }
+
+    // 仅云端画廊：先按页从云端取图，云端失败再走原有的页面解析与网络回退。
+    this.tryUseCloudPage(preview.index).then((used: boolean) => {
+      if (!this.readerSceneActive || this.detail.gid !== galleryId) {
+        return;
+      }
+      if (used) {
+        if (this.pageIndex === preview.index) {
+          this.persistSession();
+        }
+        this.preloadReaderPages(this.pageIndex);
+        return;
+      }
+      this.continueLoadReaderPage(preview);
+      this.preloadReaderPages(this.pageIndex);
+    }).catch(() => {
+      if (this.readerSceneActive && this.detail.gid === galleryId) {
+        this.continueLoadReaderPage(preview);
+        this.preloadReaderPages(this.pageIndex);
+      }
+    });
+  }
+
+  private continueLoadReaderPage(preview: GalleryPreview): void {
+    if (!this.isReaderPageWanted(preview.index)) {
+      return;
+    }
+    if (preview.pageUrl.length === 0 || preview.pageUrl.indexOf('ehviewer://') === 0) {
+      this.statusText = 'Preview has no page URL';
+      this.renderVersion++;
+      this.persistSession();
+      return;
+    }
+
+    let cached = galleryPageCache.get(preview.pageUrl);
+    if (cached !== null && cached.imageUrl === preview.imageUrl) {
+      galleryPageCache.remove(preview.pageUrl);
+      cached = null;
+    }
+    if (cached !== null) {
+      this.statusText = 'Page loaded from cache';
+      this.setReaderPage(preview.index, cached);
+      if (this.pageIndex === preview.index) {
+        this.page = cloneGalleryPage(cached);
+        this.renderVersion++;
+      }
+      this.cacheReaderImage(preview.index, cached);
+      this.persistSession();
+      return;
+    }
+
+    this.requestReaderPage(preview)
+      .then((result: GalleryPageLoadResult) => {
+        if (!this.isReaderPageWanted(preview.index)) {
+          return;
+        }
+        if (!result.ok || result.page === null) {
+          this.statusText = 'Page load failed: ' + result.message;
+          this.renderVersion++;
+          this.persistSession();
+          return;
+        }
+        const cacheUrl = result.page.pageUrl.length > 0 ? result.page.pageUrl : preview.pageUrl;
+        galleryPageCache.put(cacheUrl, result.page);
+        galleryPageCache.put(preview.pageUrl, result.page);
+        if (this.pageIndex !== preview.index) {
+          this.setReaderPage(preview.index, result.page);
+          this.cacheReaderImage(preview.index, result.page);
+          return;
+        }
+        this.statusText = 'Page loaded';
+        this.page = cloneGalleryPage(result.page);
+        this.setReaderPage(preview.index, result.page);
+        this.renderVersion++;
+        this.cacheReaderImage(preview.index, result.page);
+        this.persistSession();
+      }).catch((error: Error) => {
+        this.statusText = 'Page load failed: ' + error.message;
+        this.renderVersion++;
+        this.persistSession();
+      });
+  }
+
+  private cacheReaderImage(index: number, page: GalleryPage): Promise<void> {
+    if (!this.isReaderPageWanted(index)) {
+      return Promise.resolve();
+    }
+    const requestKey = index.toString() + ':' + page.pageUrl + ':' + page.imageUrl;
+    const pending = this.readerImageRecoveryRequests.get(requestKey);
+    if (pending !== undefined) {
+      return pending;
+    }
+    const request = this.cacheReaderImageWithServerFallback(index, page);
+    this.readerImageRecoveryRequests.set(requestKey, request);
+    request.then(() => {
+      if (this.readerImageRecoveryRequests.get(requestKey) === request) {
+        this.readerImageRecoveryRequests.delete(requestKey);
+      }
+    }).catch(() => {
+      if (this.readerImageRecoveryRequests.get(requestKey) === request) {
+        this.readerImageRecoveryRequests.delete(requestKey);
+      }
+    });
+    return request;
+  }
+
+  private async cacheReaderImageWithServerFallback(index: number, page: GalleryPage): Promise<void> {
+    const galleryId = this.detail.gid;
+    const preview = this.readerPreviewMap.get(index);
+    const previewPageUrl = preview !== undefined && preview.pageUrl.length > 0 ? preview.pageUrl : page.pageUrl;
+    const referer = readerPageReferer(this.detailRequestUrl, this.detail.previewSet, index, this.site);
+    const usedSkipKeys: string[] = [];
+    let current = cloneGalleryPage(page);
+    let lastError = '';
+
+    for (let attempt = 0; attempt < READER_IMAGE_SERVER_ATTEMPT_LIMIT; attempt++) {
+      if (!this.isReaderPageWanted(index)) {
+        return;
+      }
+      let ready = false;
+      lastError = '';
+      await cacheReaderImageForPage(current, (cachedPage: GalleryPage) => {
+        ready = true;
+        if (this.readerSceneActive && this.detail.gid === galleryId) {
+          this.applyCachedReaderPage(index, cachedPage, page.pageUrl);
+        }
+      }, this.detail, index, this.readerContext(), (message: string) => {
+        lastError = message;
+      }, IMAGE_DOWNLOAD_PRIORITY_READER, { retryLimit: 1, readerPageUrl: current.pageUrl });
+      if (ready || !this.isReaderPageWanted(index) || this.detail.gid !== galleryId ||
+        lastError.indexOf('Reader image request cancelled') >= 0) {
+        return;
+      }
+
+      const skipKey = current.skipHathKey;
+      if (skipKey.length === 0 || usedSkipKeys.indexOf(skipKey) >= 0 ||
+        attempt >= READER_IMAGE_SERVER_ATTEMPT_LIMIT - 1) {
+        break;
+      }
+      usedSkipKeys.push(skipKey);
+      const reloadUrl = current.pageUrl.length > 0 ? current.pageUrl : previewPageUrl;
+      if (reloadUrl.length === 0) {
+        break;
+      }
+      const result = await this.client.skipHathAndReloadPage(reloadUrl, skipKey, this.site, referer);
+      if (!this.isReaderPageWanted(index) || this.detail.gid !== galleryId || !result.ok || result.page === null) {
+        if (!result.ok && result.message.length > 0) {
+          lastError = result.message;
+        }
+        break;
+      }
+      current = cloneGalleryPage(result.page);
+      const cacheUrl = current.pageUrl.length > 0 ? current.pageUrl : previewPageUrl;
+      galleryPageCache.put(cacheUrl, current);
+      galleryPageCache.put(previewPageUrl, current);
+      this.setReaderPage(index, current);
+      if (this.pageIndex === index) {
+        this.page = cloneGalleryPage(current);
+        this.statusText = 'Switching image server...';
+        this.renderVersion++;
+        this.persistSession();
+      }
+    }
+
+    if (this.readerSceneActive && this.pageIndex === index && this.detail.gid === galleryId) {
+      this.statusText = 'Page load failed: ' + (lastError.length > 0 ? lastError : 'Image download failed');
+      this.renderVersion++;
+      this.persistSession();
+    }
+  }
+
+  private applyCachedReaderPage(index: number, cachedPage: GalleryPage, fallbackPageUrl: string): void {
+    galleryPageCache.put(cachedPage.pageUrl.length > 0 ? cachedPage.pageUrl : fallbackPageUrl, cachedPage);
+    this.setReaderPage(index, cachedPage);
+    if (this.pageIndex === index) {
+      this.page = cloneGalleryPage(cachedPage);
+      this.statusText = 'Page loaded from local cache';
+      this.renderVersion++;
+      this.persistSession();
+    }
+    // 图片落盘晚于翻译请求时，翻译会因拿不到本地路径而放弃；
+    // 缓存就绪后补一次，避免这一页永远没有译文。
+    if (this.comicTranslationActive && index >= this.pageIndex - 1 && index <= this.pageIndex + 2 &&
+      this.translationForPage(index) === null &&
+      this.readerTranslationLoads.indexOf(index.toString() + ':normal') < 0) {
+      const pending = this.readerPageForTranslation(index);
+      if (pending !== null) {
+        this.queueReaderTranslationIfNeeded(index, pending, false);
+      }
+    }
+  }
+
+  private async tryUseDownloadedPage(index: number, preview: GalleryPreview): Promise<boolean> {
+    const context = this.readerContext();
+    const galleryId = this.detail.gid;
+    const revision = this.loadedSessionRevision;
+    if (context === undefined) {
+      return false;
+    }
+    const path = ehDownloadFileStore.findPageImage(context, this.detail, index);
+    if (path.length <= 0) {
+      return false;
+    }
+    if (await readerPageSourceGuard.isPreview(context, path, preview, this.detail.previewSet,
+      this.detailRequestUrl) || !this.readerSceneActive || this.detail.gid !== galleryId) {
+      return false;
+    }
+    // Imported books have no useful preview dimensions. Decide the local spread
+    // from headers before publishing pixels, rather than rendering a single page
+    // and replacing its Image subtree once onComplete discovers the second page.
+    await this.prepareDownloadedSpreadSizes(context, index, path);
+    if (!this.readerSceneActive || this.detail.gid !== galleryId || this.loadedSessionRevision !== revision) {
+      return false;
+    }
+    const page: GalleryPage = {
+      pageUrl: preview.pageUrl,
+      imageUrl: '',
+      skipHathKey: '',
+      originImageUrl: '',
+      showKey: '',
+      cachedImagePath: path
+    };
+    this.setReaderPage(index, page);
+    if (this.pageIndex === index) {
+      this.statusText = 'Page loaded from downloads';
+      this.page = cloneGalleryPage(page);
+      this.renderVersion++;
+    }
+    return true;
+  }
+
+  private async prepareDownloadedSpreadSizes(context: common.UIAbilityContext, index: number,
+    path: string): Promise<void> {
+    if (appSettingsStore.getValue('adaptive_dual_page', 'Off') !== 'On') {
+      return;
+    }
+    const galleryId = this.detail.gid;
+    const revision = this.loadedSessionRevision;
+    const indexes: number[] = [index];
+    const paths: string[] = [path];
+    if (index + 1 < this.readerTotalPages()) {
+      const nextPath = ehDownloadFileStore.findPageImage(context, this.detail, index + 1);
+      if (nextPath.length > 0) {
+        indexes.push(index + 1);
+        paths.push(nextPath);
+      }
+    }
+    const requests: Promise<ReaderSourceImageSize>[] = [];
+    for (const sourcePath of paths) {
+      let request = this.downloadedImageSizes.get(sourcePath);
+      if (request === undefined) {
+        request = readReaderSourceImageSize(sourcePath);
+        this.downloadedImageSizes.set(sourcePath, request);
+      }
+      requests.push(request);
+    }
+    const sizes = await Promise.all(requests);
+    if (!this.readerSceneActive || this.detail.gid !== galleryId || this.loadedSessionRevision !== revision) {
+      return;
+    }
+    const previews = cloneGalleryPreviews(this.detail.previewSet);
+    let changed = false;
+    for (let i = 0; i < sizes.length; i++) {
+      if (sizes[i].width <= 0 || sizes[i].height <= 0) {
+        this.downloadedImageSizes.delete(paths[i]);
+        continue;
+      }
+      const preview = previews.find((value: GalleryPreview) => value.index === indexes[i]);
+      if (preview !== undefined && (preview.width !== sizes[i].width || preview.height !== sizes[i].height)) {
+        preview.width = sizes[i].width;
+        preview.height = sizes[i].height;
+        changed = true;
+      }
+    }
+    if (changed) {
+      const detail = cloneGalleryDetail(this.detail);
+      detail.previewSet = previews;
+      this.detail = detail;
+      this.seedReaderPreviewCache(previews);
+    }
+  }
+
+  private async tryUseCloudPage(index: number): Promise<boolean> {
+    const context = this.readerContext();
+    const galleryId = this.detail.gid;
+    if (context === undefined || galleryId <= 0 || !cloudGalleryPageService.hasDownloadsProfile() ||
+      !ehDownloadStore.contains(galleryId)) {
+      return Promise.resolve(false);
+    }
+    if (ehDownloadFileStore.findPageImage(context, this.detail, index).length > 0) {
+      return Promise.resolve(false);
+    }
+    const preview = this.readerPreviewForIndex(index);
+    const page: GalleryPage = {
+      pageUrl: preview === null ? '' : preview.pageUrl,
+      imageUrl: '',
+      skipHathKey: '',
+      originImageUrl: '',
+      showKey: '',
+      cachedImagePath: ''
+    };
+    const imageKey = cloudReaderImageKey(galleryId, index);
+    const cacheKey = imageKey;
+    const existing = readerImageCache.getCachedPath(context, imageKey, cacheKey);
+    if (existing.length > 0) {
+      if (await readerPageSourceGuard.isPreview(context, existing, preview === null ? undefined : preview,
+        this.detail.previewSet, this.detailRequestUrl)) {
+        return false;
+      }
+      if (!this.readerSceneActive || this.detail.gid !== galleryId) {
+        return false;
+      }
+      return Promise.resolve(this.applyCloudPage(index, page, existing));
+    }
+    const cloud = cloudGalleryPageService.fetchPage(context, this.detail, index, imageKey, cacheKey,
+      () => this.isReaderPageWanted(index));
+    const timeoutMs = preview !== null && /^https?:\/\//i.test(preview.pageUrl) ? 3000 : 0;
+    return readerCloudPageWithFallback(cloud, timeoutMs).then(async (path: string) => {
+      if (await readerPageSourceGuard.isPreview(context, path, preview === null ? undefined : preview,
+        this.detail.previewSet, this.detailRequestUrl)) {
+        return false;
+      }
+      if (path.length === 0 || !this.readerSceneActive || this.detail.gid !== galleryId) {
+        return false;
+      }
+      return this.applyCloudPage(index, page, path);
+    }).catch(() => {
+      return false;
+    });
+  }
+
+  private applyCloudPage(index: number, page: GalleryPage, path: string): boolean {
+    const applied: GalleryPage = {
+      pageUrl: page.pageUrl,
+      imageUrl: page.imageUrl,
+      skipHathKey: page.skipHathKey,
+      originImageUrl: page.originImageUrl,
+      showKey: page.showKey,
+      cachedImagePath: path
+    };
+    this.setReaderPage(index, applied);
+    if (this.pageIndex === index) {
+      this.statusText = 'Page loaded from cloud';
+      this.page = cloneGalleryPage(applied);
+      this.renderVersion++;
+    }
+    return true;
+  }
+
+  private requestReaderPage(preview: GalleryPreview): Promise<GalleryPageLoadResult> {
+    const key = preview.pageUrl;
+    const pending = this.readerPageLoadRequests.get(key);
+    if (pending !== undefined) {
+      return pending;
+    }
+    const request = this.client.loadGalleryPage(preview.pageUrl, this.site,
+      readerPageReferer(this.detailRequestUrl, this.detail.previewSet, preview.index, this.site));
+    this.readerPageLoadRequests.set(key, request);
+    request.then(() => {
+      if (this.readerPageLoadRequests.get(key) === request) {
+        this.readerPageLoadRequests.delete(key);
+      }
+    }).catch(() => {
+      if (this.readerPageLoadRequests.get(key) === request) {
+        this.readerPageLoadRequests.delete(key);
+      }
+    });
+    return request;
+  }
+
+  private async preloadReaderPage(index: number, galleryId: number): Promise<void> {
+    if (!this.isReaderPageWanted(index)) {
+      return;
+    }
+    const context = this.readerContext();
+    if (context !== undefined && galleryId === this.detail.gid &&
+      cloudGalleryPageService.hasDownloadsProfile() && ehDownloadStore.contains(galleryId) &&
+      ehDownloadFileStore.findPageImage(context, this.detail, index).length === 0) {
+      if (await this.tryUseCloudPage(index)) {
+        return;
+      }
+    }
+    if (!this.isReaderPageWanted(index)) {
+      return;
+    }
+    const preview = await this.ensureReaderPreview(index, true);
+    if (!this.isReaderPageWanted(index) || galleryId !== this.detail.gid || preview === null || preview.pageUrl.length === 0) {
+      return;
+    }
+    if (await this.tryUseDownloadedPage(index, preview)) {
+      return;
+    }
+    if (!this.isReaderPageWanted(index) || galleryId !== this.detail.gid) {
+      return;
+    }
+    if (preview.pageUrl.indexOf('ehviewer://') === 0) {
+      return;
+    }
+    let cached = galleryPageCache.get(preview.pageUrl);
+    if (cached !== null && cached.imageUrl === preview.imageUrl) {
+      galleryPageCache.remove(preview.pageUrl);
+      cached = null;
+    }
+    if (cached !== null) {
+      this.setReaderPage(index, cached);
+      await this.cacheReaderImage(index, cached);
+      return;
+    }
+    try {
+      const result = await this.requestReaderPage(preview);
+      if (!this.isReaderPageWanted(index) || galleryId !== this.detail.gid || !result.ok || result.page === null) {
+        return;
+      }
+      const cacheUrl = result.page.pageUrl.length > 0 ? result.page.pageUrl : preview.pageUrl;
+      galleryPageCache.put(cacheUrl, result.page);
+      galleryPageCache.put(preview.pageUrl, result.page);
+      this.setReaderPage(index, result.page);
+      await this.cacheReaderImage(index, result.page);
+    } catch (error) {
+    }
+  }
+
+  private async preloadReaderPages(index: number): Promise<void> {
+    const revision = ++this.readerPreloadRevision;
+    const forwardCount = this.readerPreloadForwardCount();
+    if (forwardCount <= 0) {
+      return;
+    }
+    const galleryId = this.detail.gid;
+    const parallelCount = downloadThreadLimit();
+    for (let batchStart = 1; batchStart <= forwardCount; batchStart += parallelCount) {
+      if (revision !== this.readerPreloadRevision || galleryId !== this.detail.gid) {
+        return;
+      }
+      const batch: Promise<void>[] = [];
+      const batchEnd = Math.min(forwardCount, batchStart + parallelCount - 1);
+      for (let offset = batchStart; offset <= batchEnd; offset++) {
+        const nextIndex = index + offset;
+        if (nextIndex < this.readerTotalPages()) {
+          batch.push(this.preloadReaderPage(nextIndex, galleryId));
+        }
+      }
+      await Promise.all(batch);
+    }
+  }
+
+  private readerPreloadForwardCount(): number {
+    const configuredCount = readerPreloadCount();
+    const dualPageCount = appSettingsStore.getValue('adaptive_dual_page', 'Off') === 'On' ?
+      Math.max(1, configuredCount) : configuredCount;
+    return this.comicTranslationActive ? Math.max(2, dualPageCount) : dualPageCount;
+  }
+
+  private updateReaderImageWindowForIndex(index: number): void {
+    if (this.readerVisiblePageIndexes.indexOf(index) >= 0) {
+      this.updateReaderImageWindow(this.readerVisiblePageIndexes);
+      return;
+    }
+    this.updateReaderImageWindow([index]);
+  }
+
+  private updateReaderImageWindow(visible: number[]): void {
+    if (!this.readerSceneActive || this.detail.gid <= 0 || visible.length === 0) {
+      return;
+    }
+    this.readerVisiblePageIndexes = visible.slice();
+    readerImageRequestControl.update(this.readerImageWindowOwner, this.detail.gid, visible,
+      this.readerPreloadForwardCount());
+    for (const key of Array.from(this.readerImageRecoveryRequests.keys())) {
+      const index = Number.parseInt(key.split(':')[0]);
+      if (!this.isReaderPageWanted(index)) {
+        this.readerImageRecoveryRequests.delete(key);
+      }
+    }
+  }
+
+  private isReaderPageWanted(index: number): boolean {
+    return this.readerSceneActive && readerImageRequestControl.wants(this.readerImageWindowOwner, index);
+  }
+
+  private handleReaderVisiblePagesChange(indexes: number[]): void {
+    const previous = this.readerVisiblePageIndexes;
+    this.updateReaderImageWindow(indexes);
+    // A short continuous page/spread may expose more than its anchor even when
+    // preloading is disabled. These are foreground pages, not speculative work.
+    for (const index of indexes) {
+      if (index !== indexes[0] && previous.indexOf(index) < 0) {
+        this.preloadReaderPage(index, this.detail.gid).catch(() => {});
+      }
+    }
+  }
+
+  private loadReaderPageByIndex(index: number): void {
+    if (index < 0 || index >= this.readerTotalPages()) {
+      return;
+    }
+    const preview = this.readerPreviewForIndex(index);
+    if (preview !== null) {
+      this.loadReaderPage(preview);
+      return;
+    }
+    this.pageIndex = index;
+    this.updateReaderImageWindowForIndex(index);
+    this.readerPreloadRevision++;
+    saveGalleryReadPosition(this.detail.gid, index, this.detail);
+    this.statusText = 'Resolving page ' + (index + 1).toString() + '...';
+    this.page = createReaderLoadingPage('');
+    this.setReaderPage(index, this.page);
+    this.renderVersion++;
+    if (this.comicTranslationActive) {
+      this.requestReaderTranslationWindow(false);
+    }
+    const galleryId = this.detail.gid;
+    this.tryUseCloudPage(index).then((used: boolean) => {
+      if (used || !this.readerSceneActive || this.detail.gid !== galleryId) {
+        return;
+      }
+      this.resolveReaderPreviewAndLoad(index);
+    }).catch(() => {
+      this.resolveReaderPreviewAndLoad(index);
+    });
+  }
+
+  private resolveReaderPreviewAndLoad(index: number): void {
+    this.ensureReaderPreview(index, false).then((resolved: GalleryPreview | null) => {
+      if (resolved === null) {
+        if (this.pageIndex === index) {
+          this.statusText = 'Page URL is unavailable';
+          this.renderVersion++;
+          this.persistSession();
+        }
+        return;
+      }
+      if (this.pageIndex === index) {
+        this.loadReaderPage(resolved);
+      }
+    }).catch((error: Error) => {
+      if (this.pageIndex === index) {
+        this.statusText = 'Page URL load failed: ' + error.message;
+        this.renderVersion++;
+        this.persistSession();
+      }
+    });
+  }
+
+  private seedReaderPreviewCache(previews: GalleryPreview[]): void {
+    if (previews.length > 0 && this.readerPreviewPageSize <= 0) {
+      this.readerPreviewPageSize = previews.length;
+    }
+    for (let i = 0; i < previews.length; i++) {
+      this.readerPreviewMap.set(previews[i].index, previews[i]);
+    }
+  }
+
+  private readerTotalPages(): number {
+    if (this.detail.pages > 0) {
+      return this.detail.pages;
+    }
+    return Math.max(this.detail.previewSet.length, this.readerPreviewMap.size);
+  }
+
+  private readerPreviewForIndex(index: number): GalleryPreview | null {
+    const cached = this.readerPreviewMap.get(index);
+    if (cached !== undefined) {
+      return cached;
+    }
+    for (let i = 0; i < this.detail.previewSet.length; i++) {
+      if (this.detail.previewSet[i].index === index) {
+        this.readerPreviewMap.set(index, this.detail.previewSet[i]);
+        return this.detail.previewSet[i];
+      }
+    }
+    return null;
+  }
+
+  private isPageForIndex(page: GalleryPage, index: number): boolean {
+    if (page.pageUrl.length === 0) {
+      return false;
+    }
+    const preview = this.readerPreviewForIndex(index);
+    return preview !== null && preview.pageUrl === page.pageUrl;
+  }
+
+  private restoredPageForIndex(sessionPage: GalleryPage, index: number): GalleryPage | null {
+    if (this.isPageForIndex(sessionPage, index)) {
+      return cloneGalleryPage(sessionPage);
+    }
+    for (let i = 0; i < this.readerPages.length; i++) {
+      if (this.readerPages[i].index === index) {
+        return cloneGalleryPage(this.readerPages[i].page);
+      }
+    }
+    return null;
+  }
+
+  private cloneSessionReaderPages(pages: ReaderSessionPageState[]): ReaderPageState[] {
+    const next: ReaderPageState[] = [];
+    for (let i = 0; i < pages.length; i++) {
+      next.push({
+        index: pages[i].index,
+        page: cloneGalleryPage(pages[i].page)
+      });
+    }
+    return next;
+  }
+
+  private setReaderPage(index: number, page: GalleryPage): void {
+    const next: ReaderPageState[] = [];
+    let replaced = false;
+    for (let i = 0; i < this.readerPages.length; i++) {
+      if (this.readerPages[i].index === index) {
+        next.push({ index: index, page: cloneGalleryPage(page) });
+        replaced = true;
+      } else {
+        next.push({ index: this.readerPages[i].index, page: cloneGalleryPage(this.readerPages[i].page) });
+      }
+    }
+    if (!replaced) {
+      next.push({ index: index, page: cloneGalleryPage(page) });
+    }
+    next.sort((left: ReaderPageState, right: ReaderPageState) => left.index - right.index);
+    this.readerPages = next;
+    this.queueReaderTranslationIfNeeded(index, page, false);
+  }
+
+  private readerPageForTranslation(index: number): GalleryPage | null {
+    if (index === this.pageIndex) {
+      return this.page;
+    }
+    for (let i = 0; i < this.readerPages.length; i++) {
+      if (this.readerPages[i].index === index) {
+        return this.readerPages[i].page;
+      }
+    }
+    return null;
+  }
+
+  private readerTranslationImagePath(page: GalleryPage): string {
+    if (page.cachedOriginImagePath !== undefined && page.cachedOriginImagePath.length > 0) {
+      return page.cachedOriginImagePath.replace(/^file:\/\//, '');
+    }
+    if (page.cachedImagePath !== undefined && page.cachedImagePath.length > 0) {
+      return page.cachedImagePath.replace(/^file:\/\//, '');
+    }
+    return '';
+  }
+
+  private translationForPage(index: number): ReaderPageTranslation | null {
+    for (let i = 0; i < this.readerTranslations.length; i++) {
+      if (this.readerTranslations[i].pageIndex === index) {
+        return this.readerTranslations[i];
+      }
+    }
+    return null;
+  }
+
+  private setReaderTranslation(value: ReaderPageTranslation): void {
+    const next: ReaderPageTranslation[] = [];
+    let replaced = false;
+    for (let i = 0; i < this.readerTranslations.length; i++) {
+      if (this.readerTranslations[i].pageIndex === value.pageIndex) {
+        next.push(cloneReaderPageTranslation(value));
+        replaced = true;
+      } else {
+        next.push(cloneReaderPageTranslation(this.readerTranslations[i]));
+      }
+    }
+    if (!replaced) {
+      next.push(cloneReaderPageTranslation(value));
+    }
+    next.sort((left: ReaderPageTranslation, right: ReaderPageTranslation) => left.pageIndex - right.pageIndex);
+    this.readerTranslations = next;
+  }
+
+  private setComicTranslationNotice(message: string): void {
+    this.comicTranslationNotice = message;
+    this.comicTranslationNoticeRevision++;
+  }
+
+  // 翻译请求在真正发起前有几处提前返回，过去这些分支完全静默，
+  // 用户只看到「开着开关却没译文」。开启 OCR 调试记录时把拦截原因写进日志。
+  private traceReaderTranslation(index: number, reason: string): void {
+    const context = this.readerContext();
+    if (context === undefined) {
+      return;
+    }
+    readerOcrDebugLog.recordRecognition(context, this.detail.gid, index, '[请求未发出] ' + reason);
+  }
+
+  private requestReaderTranslationWindow(forceCurrent: boolean = false): void {
+    const currentPageIndex = this.pageIndex;
+    const first = Math.max(0, currentPageIndex - 1);
+    const last = Math.min(this.readerTotalPages() - 1, currentPageIndex + 2);
+    for (let index = first; index <= last; index++) {
+      const page = this.readerPageForTranslation(index);
+      if (page !== null) {
+        this.queueReaderTranslationIfNeeded(index, page, forceCurrent && index === currentPageIndex);
+      }
+    }
+  }
+
+  private readerTranslationPriority(index: number): number {
+    const distance = index - this.pageIndex;
+    if (distance === 0) {
+      return 4;
+    }
+    if (distance === 1) {
+      return 3;
+    }
+    if (distance === 2) {
+      return 2;
+    }
+    return 1;
+  }
+
+  private queueReaderTranslationIfNeeded(index: number, page: GalleryPage, force: boolean): void {
+    if (!this.comicTranslationActive || index < this.pageIndex - 1 || index > this.pageIndex + 2) {
+      if (force) {
+        this.finishReaderTranslationRefresh(index);
+      }
+      if (index === this.pageIndex) {
+        this.traceReaderTranslation(index, '漫画翻译未激活或页码不在窗口内（comicTranslationActive=' +
+          this.comicTranslationActive.toString() + '，当前页=' + (this.pageIndex + 1).toString() + '）');
+      }
+      return;
+    }
+    if (!force && this.translationForPage(index) !== null) {
+      return;
+    }    const context = this.readerContext();
+    const scope = this.readerTranslationScope;
+    if (context === undefined || scope.length === 0) {
+      // 上下文或作用域没准备好时原来直接返回，用户看到的是「开了开关什么都没发生」。
+      if (index === this.pageIndex && !force) {
+        this.setComicTranslationNotice(context === undefined ?
+          'Reader context is not ready for translation' : 'Translation session is not ready');
+      }
+      if (index === this.pageIndex) {
+        this.traceReaderTranslation(index, context === undefined ?
+          '取不到阅读器上下文' : '翻译作用域为空（readerTranslationScope 长度 0）');
+      }
+      if (force) {
+        this.finishReaderTranslationRefresh(index);
+      }
+      return;
+    }
+    const loadKey = index.toString() + ':' + (force ? 'force' : 'normal');
+    const priority = this.readerTranslationPriority(index);
+    if (this.readerTranslationLoads.indexOf(loadKey) >= 0) {
+      const previousPriority = this.readerTranslationLoadPriorities.get(loadKey);
+      if (previousPriority === undefined || priority > previousPriority) {
+        this.readerTranslationLoadPriorities.set(loadKey, priority);
+        readerComicTranslationService.promote(this.readerTranslationScope, index, priority);
+      }
+      return;
+    }
+    this.readerTranslationLoads.push(loadKey);
+    this.readerTranslationLoadPriorities.set(loadKey, priority);
+    const imagePath = this.readerTranslationImagePath(page);
+    const load = force ? Promise.resolve<ReaderPageTranslation | null>(null) :
+      readerComicTranslationService.loadStored(context, this.detail, index);
+    load.then((stored: ReaderPageTranslation | null) => {
+      if (scope !== this.readerTranslationScope) {
+        return;
+      }
+      if (stored !== null) {
+        if (!force && this.readerTranslationRefreshing.indexOf(index) >= 0) {
+          return;
+        }
+        this.setReaderTranslation(stored);
+        return;
+      }
+      if (imagePath.length === 0) {
+        // 图片未落盘时静默跳过：不再弹「页面图片尚未就绪」。
+        // 图片缓存完成后由 applyCachedReaderPage 自动补一次翻译，用户无需感知。
+        if (force) {
+          this.finishReaderTranslationRefresh(index);
+        }
+        return;
+      }
+      const requestPriority = this.readerTranslationLoadPriorities.get(loadKey);
+      this.traceReaderTranslation(index, '已发起 OCR 与翻译（图片路径=' + imagePath + '）');
+      return readerComicTranslationService.request(context, this.detail, index, imagePath,
+        requestPriority === undefined ? priority : requestPriority, force, scope)
+        .then((translation: ReaderPageTranslation) => {
+          if (scope !== this.readerTranslationScope) {
+            return;
+          }
+          if (!force && this.readerTranslationRefreshing.indexOf(index) >= 0) {
+            return;
+          }
+          this.setReaderTranslation(translation);
+          if (force) {
+            this.finishReaderTranslationRefresh(index);
+          }
+          if (translation.lines.length === 0 && index === this.pageIndex) {
+            this.setComicTranslationNotice('No text was recognized on this page');
+          }
+        });
+    }).catch((_error: Error) => {
+      if (scope !== this.readerTranslationScope) {
+        return;
+      }
+      if (force) {
+        this.finishReaderTranslationRefresh(index);
+      }
+      if (index === this.pageIndex) {
+        const detail = _error instanceof Error ? _error.message : String(_error);
+        const suffix = detail.length > 120 ? detail.slice(0, 120) + '…' : detail;
+        this.setComicTranslationNotice(
+          suffix.length > 0 && suffix !== 'Comic translation failed' ?
+            'Comic translation failed: ' + suffix : 'Comic translation failed');
+      }
+    }).finally(() => {
+      if (scope !== this.readerTranslationScope) {
+        return;
+      }
+      const next: string[] = [];
+      for (let i = 0; i < this.readerTranslationLoads.length; i++) {
+        if (this.readerTranslationLoads[i] !== loadKey) {
+          next.push(this.readerTranslationLoads[i]);
+        }
+      }
+      this.readerTranslationLoads = next;
+      this.readerTranslationLoadPriorities.delete(loadKey);
+    });
+  }
+
+  private renewReaderTranslationScope(): void {
+    this.cancelReaderTranslationScope();
+    this.readerTranslationScope = readerComicTranslationService.beginScope();
+  }
+
+  private cancelReaderTranslationScope(): void {
+    if (this.readerTranslationScope.length === 0) {
+      return;
+    }
+    readerComicTranslationService.cancelScope(this.readerTranslationScope);
+    this.readerTranslationScope = '';
+  }
+
+  private toggleComicTranslation(enabled: boolean): void {
+    this.comicTranslationActive = enabled;
+    if (!enabled) {
+      return;
+    }
+    this.preloadReaderPages(this.pageIndex);
+    this.requestReaderTranslationWindow(false);
+  }
+
+  private refreshVisibleComicTranslations(pageIndexes: number[]): void {
+    this.comicTranslationActive = true;
+    const refreshed: number[] = [];
+    for (let i = 0; i < pageIndexes.length; i++) {
+      const index = pageIndexes[i];
+      if (index < 0 || index >= this.readerTotalPages() || refreshed.indexOf(index) >= 0) {
+        continue;
+      }
+      const page = this.readerPageForTranslation(index);
+      if (page === null) {
+        continue;
+      }
+      refreshed.push(index);
+      this.removeReaderTranslation(index);
+      if (this.readerTranslationRefreshing.indexOf(index) < 0) {
+        this.readerTranslationRefreshing.push(index);
+      }
+      this.queueReaderTranslationIfNeeded(index, page, true);
+    }
+  }
+
+  private removeReaderTranslation(index: number): void {
+    const next: ReaderPageTranslation[] = [];
+    for (let i = 0; i < this.readerTranslations.length; i++) {
+      if (this.readerTranslations[i].pageIndex !== index) {
+        next.push(cloneReaderPageTranslation(this.readerTranslations[i]));
+      }
+    }
+    this.readerTranslations = next;
+  }
+
+  private finishReaderTranslationRefresh(index: number): void {
+    const next: number[] = [];
+    for (let i = 0; i < this.readerTranslationRefreshing.length; i++) {
+      if (this.readerTranslationRefreshing[i] !== index) {
+        next.push(this.readerTranslationRefreshing[i]);
+      }
+    }
+    this.readerTranslationRefreshing = next;
+  }
+
+  private readerPreviewPageIndex(index: number): number {
+    const pageSize = this.readerPreviewPageSize > 0 ? this.readerPreviewPageSize :
+      Math.max(1, this.detail.previewSet.length);
+    return Math.floor(index / pageSize);
+  }
+
+  private ensureReaderPreview(index: number, silent: boolean): Promise<GalleryPreview | null> {
+    const cached = this.readerPreviewForIndex(index);
+    if (cached !== null) {
+      return Promise.resolve(cached);
+    }
+    if (this.detail.gid <= 0 || this.detail.token.length === 0 || index < 0 || index >= this.readerTotalPages()) {
+      return Promise.resolve(null);
+    }
+    const previewPageIndex = this.readerPreviewPageIndex(index);
+    const pending = this.readerPreviewPageRequests.get(previewPageIndex);
+    if (pending !== undefined) {
+      return pending;
+    }
+    const referer = this.detailRequestUrl.length > 0 ? this.detailRequestUrl : this.listRequestUrl;
+    const request = this.client.loadGalleryDetail(this.detail.gid, this.detail.token, previewPageIndex,
+      this.site, referer).then((result: GalleryDetailLoadResult) => {
+      this.readerPreviewPageRequests.delete(previewPageIndex);
+      if (!result.ok || result.detail === null) {
+        if (!silent) {
+          this.statusText = 'Preview page load failed: ' + result.message;
+          this.renderVersion++;
+        }
+        return null;
+      }
+      this.mergeReaderPreviewSet(result.detail);
+      return this.readerPreviewForIndex(index);
+    }).catch((error: Error) => {
+      this.readerPreviewPageRequests.delete(previewPageIndex);
+      if (!silent) {
+        this.statusText = 'Preview page load failed: ' + error.message;
+        this.renderVersion++;
+      }
+      return null;
+    });
+    this.readerPreviewPageRequests.set(previewPageIndex, request);
+    return request;
+  }
+
+  private mergeReaderPreviewSet(loaded: GalleryDetail): void {
+    this.seedReaderPreviewCache(loaded.previewSet);
+    const byIndex: Map<number, GalleryPreview> = new Map();
+    for (let i = 0; i < this.detail.previewSet.length; i++) {
+      byIndex.set(this.detail.previewSet[i].index, this.detail.previewSet[i]);
+    }
+    for (let i = 0; i < loaded.previewSet.length; i++) {
+      byIndex.set(loaded.previewSet[i].index, loaded.previewSet[i]);
+    }
+    const merged: GalleryPreview[] = Array.from(byIndex.values());
+    merged.sort((left: GalleryPreview, right: GalleryPreview) => left.index - right.index);
+    const nextDetail = cloneGalleryDetail(this.detail);
+    nextDetail.previewSet = cloneGalleryPreviews(merged);
+    nextDetail.previewPages = Math.max(nextDetail.previewPages, loaded.previewPages);
+    nextDetail.pages = Math.max(nextDetail.pages, loaded.pages);
+    this.detail = nextDetail;
+    for (let i = 0; i < this.detail.previewSet.length; i++) {
+      this.readerPreviewMap.set(this.detail.previewSet[i].index, this.detail.previewSet[i]);
+    }
+    this.renderVersion++;
+    this.persistSession();
+  }
+
+  build() {
+    ReaderScene({
+      renderVersion: this.renderVersion,
+      page: this.page,
+      readerPages: this.readerPages,
+      readerPreviews: this.detail.previewSet,
+      galleryId: this.detail.gid,
+      downloadGalleryDir: this.readerDownloadGalleryDir(),
+      downloadGalleryIsLocalBook: this.detail.token.length === 0,
+      statusText: this.statusText,
+      pageIndex: this.pageIndex,
+      totalPages: this.readerTotalPages(),
+      readerTranslations: this.readerTranslations,
+      comicTranslationActive: this.comicTranslationActive,
+      comicTranslationNotice: this.comicTranslationNotice,
+      comicTranslationNoticeRevision: this.comicTranslationNoticeRevision,
+      restoreAppChromeOnExit: this.restoreAppChromeOnExit,
+      onBack: () => {
+        this.closeReader();
+      },
+      onPrev: () => {
+        this.loadReaderPageByIndex(this.pageIndex - 1);
+      },
+      onNext: () => {
+        this.loadReaderPageByIndex(this.pageIndex + 1);
+      },
+      onJump: (index: number) => {
+        this.loadReaderPageByIndex(index);
+      },
+      onRetry: () => {
+        this.loadReaderPageByIndex(this.pageIndex);
+      },
+      onRefreshPage: (index: number) => {
+        this.loadReaderPageByIndex(index);
+      },
+      onVisiblePageIndexesChange: (indexes: number[]) => {
+        this.handleReaderVisiblePagesChange(indexes);
+      },
+      onAdaptiveDualPageChange: (enabled: boolean) => {
+        if (enabled) {
+          this.preloadReaderPages(this.pageIndex);
+        }
+      },
+      onComicTranslationToggle: (enabled: boolean) => {
+        this.toggleComicTranslation(enabled);
+      },
+      onComicTranslationRefresh: (pageIndexes: number[]) => {
+        this.refreshVisibleComicTranslations(pageIndexes);
+      }
+    })
+  }
+}
+
+
