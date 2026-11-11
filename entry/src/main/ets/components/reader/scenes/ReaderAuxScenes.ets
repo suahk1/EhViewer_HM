@@ -8,7 +8,7 @@ import {
   translationPriorityForIndex
 } from '../../../services/EhTranslationService';
 import { TRANSLATION_BUTTONS_VISIBLE_KEY } from '../../../services/AppSettingsStore';
-import { nextFloatingToolbarOffset, uiText } from '../../../shared/AppRuntime';
+import { nextFloatingToolbarOffset, showTranslationToggleFeedback, uiText } from '../../../shared/AppRuntime';
 import {
   themeDividerColor,
   themePageBackground,
@@ -212,6 +212,7 @@ export struct CommentsScene {
         onBack: this.onBack,
         onAction: () => {
           ehTranslationService.setEnabled(!this.translationEnabled);
+            showTranslationToggleFeedback(this.getUIContext(), !this.translationEnabled);
         }
       })
     }

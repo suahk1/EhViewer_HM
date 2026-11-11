@@ -1459,6 +1459,8 @@ export function zhText(text: string): string {
     case 'Preferences and about': return '偏好设置与关于';
     case 'Translation': return '翻译';
     case 'Title and comment translation providers': return '标题与评论翻译服务';
+    case 'Title and comment translation on': return '已开启标题与评论翻译';
+    case 'Title and comment translation off': return '已关闭标题与评论翻译';
     case 'Translation feature': return '翻译功能';
     case 'Show translation buttons on gallery lists, details and comments': return '在画廊列表、详情和评论中显示翻译按钮';
     case 'The translation toggle is in the lower-right toolbar': return '翻译开关在右下角工具栏中';

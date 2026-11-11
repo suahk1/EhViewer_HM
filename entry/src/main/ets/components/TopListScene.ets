@@ -44,7 +44,7 @@ import {
   uiRadius,
   uiTabHeight
 } from '../shared/AppSurfaceStyle';
-import { LANGUAGE_REVISION_KEY, STATUS_BAR_HEIGHT_KEY, setActiveBackHandler, runDetailBackHandler, createEmptyDetail, createEmptyTopListDetail, createEmptyTopListInfo, createEmptyTopListBucket, createEmptyTopListItem, cloneGalleryDetail, cloneGalleryInfo, cloneTopListDetail, currentGallerySite, uiText, clearActiveBackHandler } from '../shared/AppRuntime';
+import { LANGUAGE_REVISION_KEY, STATUS_BAR_HEIGHT_KEY, setActiveBackHandler, showTranslationToggleFeedback, runDetailBackHandler, createEmptyDetail, createEmptyTopListDetail, createEmptyTopListInfo, createEmptyTopListBucket, createEmptyTopListItem, cloneGalleryDetail, cloneGalleryInfo, cloneTopListDetail, currentGallerySite, uiText, clearActiveBackHandler } from '../shared/AppRuntime';
 import { ActionBubble, GalleryListScene, GalleryListStateView } from './GalleryScenes';
 import { GalleryDetailHostScene } from './GalleryDetailHostScene';
 import { ReaderSessionScene } from './ReaderHostScene';
@@ -794,6 +794,7 @@ export struct TopListScene {
               directTap: true,
               onTapAction: () => {
                 ehTranslationService.setEnabled(!this.translationEnabled);
+                showTranslationToggleFeedback(this.getUIContext(), !this.translationEnabled);
               }
             })
           }

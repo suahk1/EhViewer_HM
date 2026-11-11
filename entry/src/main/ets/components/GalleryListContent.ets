@@ -24,7 +24,7 @@ import { FavoriteCategoryInfo } from '../services/GalleryListParser';
 import {
   mainContentWidthFallbackVp,
 } from '../services/WindowChromeController';
-import { pushActiveBackHandler } from '../shared/AppRuntime';
+import { pushActiveBackHandler,  showTranslationToggleFeedback } from '../shared/AppRuntime';
 import { sortedStringKey, toggleStringValue } from '../shared/AppRuntime';
 import { GalleryCardScrollAnchor } from '../shared/GalleryCardScrollAnchor';
 import { ArrayDataSource } from '../shared/ListDataSource';
@@ -1902,6 +1902,7 @@ export struct GalleryListContent {
             },
             onTranslate: () => {
               ehTranslationService.setEnabled(!this.translationEnabled);
+              showTranslationToggleFeedback(this.getUIContext(), !this.translationEnabled);
             },
             onSideChange: (side: string) => {
               this.floatingActionSideController.handleManualSide(side);
@@ -1928,6 +1929,7 @@ export struct GalleryListContent {
             onRefresh: this.onRefresh,
             onTranslate: () => {
               ehTranslationService.setEnabled(!this.translationEnabled);
+              showTranslationToggleFeedback(this.getUIContext(), !this.translationEnabled);
             },
             onRandom: this.onRandom,
             onImageSearch: () => {

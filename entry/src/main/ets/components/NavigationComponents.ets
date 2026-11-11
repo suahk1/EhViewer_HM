@@ -914,7 +914,7 @@ export struct EhSubNavBar {
           Button({ type: ButtonType.Circle, stateEffect: true }) {
             SymbolGlyph(this.actionIcon)
               .fontSize(22)
-              .fontColor([navigationTitleText()])
+              .fontColor([this.actionChecked ? themeAccentTextColor() : navigationTitleText()])
           }
           .width(this.actionSize())
           .height(this.actionSize())
@@ -922,7 +922,7 @@ export struct EhSubNavBar {
             themeOnPrimaryActionBackground())))
           .margin({ left: 8 })
           .flexShrink(0)
-          .border({ width: 1, color: uiButtonHighlightBorderColor() })
+          .border({ width: 1, color: this.actionChecked ? themeAccentTextColor() : uiButtonHighlightBorderColor() })
           .backgroundEffect(uiTransparentButtonBackgroundEffect())
           .systemMaterial(uiButtonMaterial())
           .onClick(() => {

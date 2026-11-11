@@ -1,4 +1,5 @@
 import { bundleManager, common } from '@kit.AbilityKit';
+import { UIContext } from '@kit.ArkUI';
 import { fileIo as fs, fileUri } from '@kit.CoreFileKit';
 import { GalleryCategory, GalleryComment, GalleryDetail, GalleryInfo, GalleryPage, GalleryPreview, GalleryRoute, GallerySite, GalleryTagGroup, GalleryTagInfo, TopListBucket, TopListDetail, TopListInfo, TopListItem, TopListKind } from '../model/GalleryModels';
 import { ehDownloadFileStore } from '../services/EhDownloadFileStore';
@@ -74,6 +75,7 @@ import {
 import {
   notifyHistoryReadChanged,
   shouldShowTagTranslations,
+  uiStatusText,
   uiText,
 } from './AppStrings';
 export { sortDownloadItems } from '../services/DownloadSortSupport';
@@ -260,6 +262,16 @@ export function setActiveBackHandler(handler: (() => boolean) | null): void {
 // 单槽守卫清空：仅当槽里仍是自己的处理器时才清，防止误删后挂载场景的注册。
 // 背景：条件渲染场景卸载时 aboutToDisappear 先于新场景挂载跑，但无守卫的置空
 // 在时序变化时会清掉别人的注册；下载场景就因残留单槽闭包吞掉过返回键（F-105）。
+// 翻译开关切换的即时反馈：6 个 UI 入口共用（F-109 按钮无反馈）。
+export function showTranslationToggleFeedback(uiContext: UIContext, enabled: boolean): void {
+  try {
+    uiContext.getPromptAction().showToast({
+      message: uiStatusText(enabled ? 'Title and comment translation on' : 'Title and comment translation off')
+    });
+  } catch (error) {
+  }
+}
+
 export function clearActiveBackHandler(handler: () => boolean): void {
   if (activeBackHandler === handler) {
     activeBackHandler = null;

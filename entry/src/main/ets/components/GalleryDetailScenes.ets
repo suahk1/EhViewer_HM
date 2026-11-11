@@ -16,8 +16,7 @@ import {
   pushDetailBackHandler,
   shouldShowTagTranslations,
   uiStatusText,
-  uiText
-} from '../shared/AppRuntime';
+  uiText,  showTranslationToggleFeedback } from '../shared/AppRuntime';
 import { themePageBackground } from '../shared/AppPalette';
 import {
   themeAccentTextColor,
@@ -650,6 +649,7 @@ export struct GalleryDetailScene {
           onBack: this.onBack,
           onAction: () => {
             ehTranslationService.setEnabled(!this.translationEnabled);
+              showTranslationToggleFeedback(this.getUIContext(), !this.translationEnabled);
           }
         })
       }
