@@ -30,7 +30,7 @@ import {
   rememberContinuationRoute,
   takePendingContinuationSnapshot
 } from '../services/DistributedContinuationService';
-import { EhDrawer } from '../components/NavigationComponents';
+import { AppToastHost, EhDrawer } from '../components/NavigationComponents';
 import { RemoteSyncDetailOverlay } from '../components/RemoteSyncDetailOverlay';
 import { REMOTE_SYNC_DETAIL_VISIBLE_KEY } from '../services/RemoteStorageSyncService';
 import { ConfirmActionOverlay } from '../components/ConfirmActionOverlay';
@@ -837,6 +837,10 @@ struct Index {
         .backgroundColor(themePageBackground())
         .zIndex(100)
       }
+
+      // 应用内 toast：反转主题色胶囊，不挡触摸（F-109）。
+      AppToastHost()
+        .zIndex(999)
     }
     .width('100%')
     .height('100%')

@@ -76,7 +76,7 @@ import {  PENDING_DETAIL_RESTORE_REVISION_KEY,
   REMEMBERED_DETAIL_ROUTE_KEY,
   REMEMBERED_DETAIL_SITE_KEY,
   REMEMBERED_DETAIL_URL_KEY,
- BOTTOM_AVOID_HEIGHT_KEY, LANGUAGE_REVISION_KEY, STATUS_BAR_HEIGHT_KEY, runDetailBackHandler, setActiveBackHandler,  showTranslationToggleFeedback } from '../shared/AppRuntime';
+ BOTTOM_AVOID_HEIGHT_KEY, LANGUAGE_REVISION_KEY, STATUS_BAR_HEIGHT_KEY, runDetailBackHandler, setActiveBackHandler,  showTranslationToggleFeedback,  showRaisedToast } from '../shared/AppRuntime';
 import { sortedStringKey, toggleStringValue } from '../shared/AppRuntime';
 import { APP_DOCK_BAR_HEIGHT, APP_DOCK_FAB_RESERVE, appDockBottomInset } from './FloatingDock';
 import { appLog } from '../services/AppLogService';
@@ -979,10 +979,7 @@ export struct DownloadScene {
 
   private showFloatingStatus(message: string): void {
     this.statusText = message;
-    try {
-      this.getUIContext().getPromptAction().showToast({ message: uiStatusText(message) });
-    } catch (error) {
-    }
+    showRaisedToast(this.getUIContext(), uiStatusText(message));
   }
 
   private prepareDownloadBrowsePosition(): void {

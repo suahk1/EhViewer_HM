@@ -262,14 +262,22 @@ export function setActiveBackHandler(handler: (() => boolean) | null): void {
 // 单槽守卫清空：仅当槽里仍是自己的处理器时才清，防止误删后挂载场景的注册。
 // 背景：条件渲染场景卸载时 aboutToDisappear 先于新场景挂载跑，但无守卫的置空
 // 在时序变化时会清掉别人的注册；下载场景就因残留单槽闭包吞掉过返回键（F-105）。
+// 应用内 toast 信号：Index 根部挂载的 AppToastHost 监听并渲染。
+// 不用系统 promptAction：系统 toast 跟随系统主题，应用主题与之相反时对比度差；
+// 自绘胶囊颜色反转于页面背景（深色页配浅胶囊、浅色页配深胶囊），双主题都清晰（F-109）。
+export const APP_TOAST_MESSAGE_KEY: string = 'appToastMessage';
+export const APP_TOAST_REVISION_KEY: string = 'appToastRevision';
+
+export function showRaisedToast(uiContext: UIContext, message: string): void {
+  AppStorage.setOrCreate<string>(APP_TOAST_MESSAGE_KEY, message);
+  const revision = AppStorage.get<number>(APP_TOAST_REVISION_KEY) ?? 0;
+  AppStorage.setOrCreate<number>(APP_TOAST_REVISION_KEY, revision + 1);
+}
+
 // 翻译开关切换的即时反馈：6 个 UI 入口共用（F-109 按钮无反馈）。
 export function showTranslationToggleFeedback(uiContext: UIContext, enabled: boolean): void {
-  try {
-    uiContext.getPromptAction().showToast({
-      message: uiStatusText(enabled ? 'Title and comment translation on' : 'Title and comment translation off')
-    });
-  } catch (error) {
-  }
+  showRaisedToast(uiContext, uiStatusText(enabled ?
+    'Title and comment translation on' : 'Title and comment translation off'));
 }
 
 export function clearActiveBackHandler(handler: () => boolean): void {

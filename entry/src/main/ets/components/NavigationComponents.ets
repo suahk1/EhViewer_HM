@@ -4,7 +4,7 @@ import { DownloadInfo, ehDownloadStore } from '../services/EhDownloadStore';
 import { HomeLimits, HomeLimitsResult, homeLimitsService } from '../services/HomeLimitsService';
 import { appSettingsStore } from '../services/AppSettingsStore';
 import { MAIN_CONTENT_WIDTH_VP_KEY } from '../services/WindowChromeController';
-import { BOTTOM_AVOID_HEIGHT_KEY, LANGUAGE_REVISION_KEY, STATUS_BAR_HEIGHT_KEY, THEME_REVISION_KEY, downloadQueueSummary, getAbilityContext, uiText, uiStatusText, DrawerItem, DRAWER_ITEMS } from '../shared/AppRuntime';
+import { BOTTOM_AVOID_HEIGHT_KEY, LANGUAGE_REVISION_KEY, STATUS_BAR_HEIGHT_KEY, THEME_REVISION_KEY, downloadQueueSummary, getAbilityContext, uiText, uiStatusText, DrawerItem, DRAWER_ITEMS, APP_TOAST_MESSAGE_KEY, APP_TOAST_REVISION_KEY } from '../shared/AppRuntime';
 import {
   REMOTE_SYNC_ACTIVE_KEY,
   REMOTE_SYNC_DETAIL_VISIBLE_KEY,
@@ -29,7 +29,10 @@ import {
   themeSelectedText,
   themeSurface,
   themeSurfaceVariant,
-  themeTransparentColor
+  themeTransparentColor,
+  themeSelectedButtonColor,
+  themeSelectedButtonTextColor,
+  isDarkTheme,
 } from '../shared/AppPalette';
 import {
   uiAdaptiveTitleSize,
@@ -914,15 +917,17 @@ export struct EhSubNavBar {
           Button({ type: ButtonType.Circle, stateEffect: true }) {
             SymbolGlyph(this.actionIcon)
               .fontSize(22)
-              .fontColor([this.actionChecked ? themeAccentTextColor() : navigationTitleText()])
+              .fontColor([this.actionChecked ? themeSelectedButtonTextColor() : navigationTitleText()])
           }
           .width(this.actionSize())
           .height(this.actionSize())
-          .backgroundColor(uiMaterialBackground(navigationActionBackground(this.actionChecked ? themeOnPrimaryActionStrongBackground() :
-            themeOnPrimaryActionBackground())))
+          // 选中态用「实心强调色」而非描边：深色主题里描边+灰调强调色肉眼难辨，
+          // 用户反馈"开启后反而变灰像没开"（F-109）。
+          .backgroundColor(this.actionChecked ? themeSelectedButtonColor() :
+            uiMaterialBackground(navigationActionBackground(themeOnPrimaryActionBackground())))
           .margin({ left: 8 })
           .flexShrink(0)
-          .border({ width: 1, color: this.actionChecked ? themeAccentTextColor() : uiButtonHighlightBorderColor() })
+          .border({ width: 1, color: this.actionChecked ? themeSelectedButtonColor() : uiButtonHighlightBorderColor() })
           .backgroundEffect(uiTransparentButtonBackgroundEffect())
           .systemMaterial(uiButtonMaterial())
           .onClick(() => {
@@ -1383,5 +1388,69 @@ export struct AppTopBar {
     .alignItems(VerticalAlign.Center)
     .backgroundColor(navigationBarBackground())
     .backgroundEffect(uiTitleBarBackgroundEffect())
+  }
+}
+
+// ===================================================================
+// AppToastHost -- 应用内 toast 宿主：挂在 Index 根部，颜色反转于页面主题
+// （深色主题→浅色胶囊、浅色主题→深色胶囊），不挡触摸（F-109 按钮反馈）。
+// ===================================================================
+@Component
+export struct AppToastHost {
+  @StorageProp(APP_TOAST_MESSAGE_KEY) @Watch('onAppToastMessage') appToastMessage: string = '';
+  @StorageProp(APP_TOAST_REVISION_KEY) appToastRevision: number = 0;
+  @StorageProp(THEME_REVISION_KEY) themeRevision: number = 0;
+  @State visibleMessage: string = '';
+  private hideTimer: number = -1;
+
+  onAppToastMessage(): void {
+    const message = this.appToastMessage;
+    if (message.length === 0) {
+      return;
+    }
+    this.visibleMessage = message;
+    if (this.hideTimer !== -1) {
+      clearTimeout(this.hideTimer);
+    }
+    this.hideTimer = setTimeout(() => {
+      this.visibleMessage = '';
+    }, 2200);
+  }
+
+  aboutToDisappear(): void {
+    if (this.hideTimer !== -1) {
+      clearTimeout(this.hideTimer);
+      this.hideTimer = -1;
+    }
+  }
+
+  private chipBackground(): string {
+    return isDarkTheme() ? '#F2F2F6' : '#26262A';
+  }
+
+  private chipTextColor(): string {
+    return isDarkTheme() ? '#19191B' : '#FFFFFF';
+  }
+
+  build() {
+    Stack({ alignContent: Alignment.Bottom }) {
+      if (this.visibleMessage.length > 0) {
+        Text(this.visibleMessage)
+          .fontSize(14)
+          .fontColor(this.chipTextColor())
+          .textAlign(TextAlign.Center)
+          .maxLines(2)
+          .padding({ left: 20, right: 20, top: 11, bottom: 11 })
+          .backgroundColor(this.chipBackground())
+          .borderRadius(22)
+          .opacity(0.96)
+          .margin({ bottom: 132 })
+          .shadow({ radius: 14, color: 'rgba(0,0,0,0.25)', offsetX: 0, offsetY: 3 })
+          .transition(TransitionEffect.OPACITY.animation({ duration: 160, curve: Curve.EaseOut }))
+      }
+    }
+    .width('100%')
+    .height('100%')
+    .hitTestBehavior(HitTestMode.None)
   }
 }
