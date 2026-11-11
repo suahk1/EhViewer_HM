@@ -39,6 +39,11 @@ export struct TranslationText {
   }
 
   private requestTranslationIfNeeded(): void {
+    // F-124 诊断日志：定位「列表标题不翻译」（临时，定位后移除）。
+    console.info('[TranslationDiag] request gate: enabled=' + this.translationEnabled.toString() +
+      ' priority=' + this.translationPriority.toString() +
+      ' sourceLen=' + this.sourceText.trim().length.toString() +
+      ' kind=' + this.contentKind);
     if (!this.translationEnabled || this.translationPriority <= 0 || this.sourceText.trim().length === 0) {
       return;
     }
@@ -54,8 +59,35 @@ export struct TranslationText {
       if (version === this.requestVersion && this.translationEnabled) {
         this.translatedText = translated;
       }
-    }).catch(() => {
-      if (version === this.requestVersion && this.translatedText.length === 0) {
+    }).catch((error: Error) => {
+      console.info('[TranslationDiag] request failed: ' + error.message);
+      if (version !== this.requestVersion) {
+        return;
+      }
+      // F-124 用户反馈「点了翻译没作用」：六源降级后仍失败多为限流抖动，
+      // 静默放弃会让整列表维持原文。可见条目（优先级 2）延迟 3 秒重试一次。
+      if (this.translationPriority >= 2) {
+        setTimeout(() => {
+          if (version !== this.requestVersion || !this.translationEnabled ||
+            this.translatedText.length > 0) {
+            return;
+          }
+          this.requestVersion++;
+          const retryVersion = this.requestVersion;
+          // force=true：绕过首个请求的 pending key，强制重发（失败不缓存）。
+          const retry = ehTranslationService.translate(this.sourceText, this.contentKind,
+            this.translationPriority, true, false, true);
+          retry.then((translated: string) => {
+            if (retryVersion === this.requestVersion && this.translationEnabled) {
+              this.translatedText = translated;
+            }
+          }).catch(() => {
+            if (retryVersion === this.requestVersion && this.translatedText.length === 0) {
+              this.translatedText = '';
+            }
+          });
+        }, 3000);
+      } else if (this.translatedText.length === 0) {
         this.translatedText = '';
       }
     });

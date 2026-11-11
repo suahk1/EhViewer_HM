@@ -877,7 +877,7 @@ export class EhDownloadManager {
       const agentInfo: wantAgent.WantAgentInfo = {
         wants: [
           {
-            bundleName: 'yt.ehviewer.huawei',
+            bundleName: context.abilityInfo !== undefined ? context.abilityInfo.bundleName : '',
             moduleName: 'entry',
             abilityName: 'EntryAbility'
           }

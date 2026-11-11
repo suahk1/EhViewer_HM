@@ -38,6 +38,8 @@ const PREVIEW_THUMB_LOCAL_SOURCE_CACHE: Map<string, string> = new Map<string, st
 @Component
 export struct DetailPreviews {
   @Prop previews: GalleryPreview[] = [];
+  // 本地页路径（host 收集）：云端单张预览图加载失败时按 preview.index 兜底（F-114）。
+  @Prop localPagePaths: string[] = [];
   @Prop previewPages: number = 0;
   @Prop totalPages: number = 0;
   @Prop isDetailLoaded: boolean = false;
@@ -142,6 +144,7 @@ export struct DetailPreviews {
               preview: preview,
               tileWidth: this.previewTileWidth(),
               imageHeight: this.previewTileHeight(),
+              localFallbackPath: this.localPagePaths[preview.index - 1] ?? '',
               onSelectPreview: (selected: GalleryPreview) => {
                 this.onSelectPreview(selected);
               }
@@ -306,6 +309,8 @@ export struct PreviewTile {
   @Prop preview: GalleryPreview = createEmptyPreview();
   @Prop tileWidth: number = 132;
   @Prop imageHeight: number = 96;
+  // 云端预览图加载失败时兜底的本地页路径（按 preview.index 对应）。
+  @Prop localFallbackPath: string = '';
   onSelectPreview: (preview: GalleryPreview) => void = () => {};
 
   build() {
@@ -314,7 +319,8 @@ export struct PreviewTile {
         preview: this.preview,
         widthValue: this.tileWidth,
         heightValue: this.imageHeight,
-        radiusValue: 4
+        radiusValue: 4,
+        localFallbackPath: this.localFallbackPath
       })
       Text((this.preview.index + 1).toString())
         .fontSize(11)
@@ -336,6 +342,8 @@ export struct PreviewThumb {
   @Prop widthValue: number = 132;
   @Prop heightValue: number = 96;
   @Prop radiusValue: number = 4;
+  // 云端预览图加载失败时的本地页兜底路径（F-114）。
+  @Prop localFallbackPath: string = '';
   @State localUrl: string = '';
   @State loadFailed: boolean = false;
   private cachedUrl: string = '';
@@ -366,6 +374,13 @@ export struct PreviewThumb {
       return;
     }
     this.cachedUrl = cacheKey;
+    // 本地页路径直接渲染：对账后的本地预览不需要也不应该走网络缓存。
+    if (this.preview.imageUrl.startsWith('/') || this.preview.imageUrl.startsWith('file://')) {
+      this.localUrl = readerLocalImageSource(this.preview.imageUrl);
+      PREVIEW_THUMB_LOCAL_SOURCE_CACHE.set(cacheKey, this.localUrl);
+      this.loadFailed = false;
+      return;
+    }
     const cachedLocalSource = PREVIEW_THUMB_LOCAL_SOURCE_CACHE.get(cacheKey);
     this.localUrl = cachedLocalSource === undefined ? '' : cachedLocalSource;
     this.loadFailed = false;
@@ -382,10 +397,18 @@ export struct PreviewThumb {
         this.loadFailed = false;
       }
     }, () => {
-      if (this.cachedUrl === cacheKey) {
-        this.localUrl = '';
-        this.loadFailed = true;
+      if (this.cachedUrl !== cacheKey) {
+        return;
       }
+      // 云端预览图拉取失败：本地页兜底（能阅读就说明本地页存在）。
+      if (this.localFallbackPath.length > 0) {
+        this.localUrl = readerLocalImageSource(this.localFallbackPath);
+        PREVIEW_THUMB_LOCAL_SOURCE_CACHE.set(cacheKey, this.localUrl);
+        this.loadFailed = false;
+        return;
+      }
+      this.localUrl = '';
+      this.loadFailed = true;
     });
   }
 

@@ -281,8 +281,6 @@ export struct SettingsScene {
   private unregisterSettingsBack: () => void = () => {};
   @State clearLogConfirmationVisible: boolean = false;
   @State restoreConfirmationVisible: boolean = false;
-  private restoreArmActive: boolean = false;
-  private restoreArmAt: number = 0;
   @State zipDeleteAskVisible: boolean = false;
   @State zipDeleteMessage: string = '';
   private zipDeletePaths: string[] = [];
@@ -1007,7 +1005,7 @@ export struct SettingsScene {
 
   private cycleSetting(row: SettingsRowItem): void {
     if (row.key === undefined) {
-      this.statusText = row.title + ' is not available';
+      this.statusText = uiText(row.title) + uiText(' is not available');
       return;
     }
     // 诊断用：确认点击是否进到这里、动作有没有被消费、有没有可选项。
@@ -1036,7 +1034,7 @@ export struct SettingsScene {
     }
     if (row.options === undefined || row.options.length === 0) {
       console.info('[SettingsTap] no options, showing status only: ' + row.key);
-      this.statusText = row.title + ' is not available yet';
+      this.statusText = uiText(row.title) + uiText(' is not available yet');
       this.showToast(this.statusText);
       return;
     }
@@ -1046,7 +1044,7 @@ export struct SettingsScene {
   private openOptionPicker(row: SettingsRowItem): void {
     console.info('[SettingsTap] openOptionPicker ' + (row.key ?? ''));
     if (row.key === undefined || row.options === undefined || row.options.length === 0) {
-      this.statusText = row.title + ' is not available';
+      this.statusText = uiText(row.title) + uiText(' is not available');
       return;
     }
     this.optionKey = row.key;
@@ -1281,18 +1279,8 @@ export struct SettingsScene {
       return true;
     }
     if (key === 'restore_default_settings') {
-      // 对话框确认按钮在部分设备上命中不可靠（BLOCK_HIERARCHY 之外的层叠问题），
-      // 改用行内二次点击确认：第一次点击武装（5 秒内），第二次点击执行。
-      if (this.restoreArmActive && Date.now() - this.restoreArmAt < 5000) {
-        this.restoreArmActive = false;
-        this.performRestoreDefaults();
-        return true;
-      }
-      this.restoreArmActive = true;
-      this.restoreArmAt = Date.now();
-      // 必须用 toast 而不是 showResult：showResult 是居中模态卡片（必须点确定才关），
-      // 会把面板整个盖住，第二次确认点击永远落不到行上。
-      this.showToast('Tap Restore again within 5 seconds to confirm the reset');
+      // 沉浸式确认弹窗（F-118 用户标准）：确认/取消，恢复出厂属高危操作必须确认。
+      this.restoreConfirmationVisible = true;
       return true;
     }
     if (key === 'declaration') {

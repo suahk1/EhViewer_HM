@@ -66,6 +66,8 @@ export interface EhTextRequestOptions {
   browserCompatibility?: boolean;
   connectTimeoutMs?: number;
   readTimeoutMs?: number;
+  // 重试次数（默认 3）：后台匹配探测传 1，让「停止」按钮秒级生效（F-116）。
+  attempts?: number;
 }
 
 interface CachedHttpResponse {
@@ -296,7 +298,7 @@ export class EhHttpClient {
     cacheTtlMs: number, options?: EhTextRequestOptions): Promise<EhHttpResponse> {
     return requestTextWithRetry((): Promise<EhHttpResponse> => {
       return this.getTextOnce(url, referer, cookieHeader, cacheTtlMs, options);
-    }, 3);
+    }, options?.attempts ?? 3);
   }
 
   private async getTextOnce(url: string, referer: string, cookieHeader: string,
@@ -748,12 +750,12 @@ export class EhHttpClient {
   }
 
   async loadGalleryList(builder: ListUrlBuilder, site: GallerySite = GallerySite.E,
-    includeUConfig: boolean = true): Promise<GalleryListLoadResult> {
+    includeUConfig: boolean = true, requestOptions?: EhTextRequestOptions): Promise<GalleryListLoadResult> {
     if (builder.mode === ListMode.ImageSearch) {
       return this.loadImageSearchList(builder, site);
     }
     const url = builder.build(site);
-    return this.loadGalleryListUrl(url, site, includeUConfig);
+    return this.loadGalleryListUrl(url, site, includeUConfig, requestOptions);
   }
 
   async loadFavoritesList(builder: FavListUrlBuilder, site: GallerySite = GallerySite.E): Promise<GalleryListLoadResult> {
@@ -771,10 +773,20 @@ export class EhHttpClient {
   }
 
   async loadGalleryListUrl(url: string, site: GallerySite = GallerySite.E,
-    includeUConfig: boolean = true): Promise<GalleryListLoadResult> {
+    includeUConfig: boolean = true, requestOptions?: EhTextRequestOptions): Promise<GalleryListLoadResult> {
     try {
+      const mergedOptions: EhTextRequestOptions = {
+        includeUConfig: includeUConfig
+      };
+      if (requestOptions !== undefined) {
+        mergedOptions.connectTimeoutMs = requestOptions.connectTimeoutMs;
+        mergedOptions.readTimeoutMs = requestOptions.readTimeoutMs;
+        mergedOptions.attempts = requestOptions.attempts;
+        mergedOptions.forceUConfig = requestOptions.forceUConfig;
+        mergedOptions.browserCompatibility = requestOptions.browserCompatibility;
+      }
       const response = await this.getText(url, EhUrl.getReferer(site), includeUConfig ? 60000 : 0,
-        { includeUConfig: includeUConfig });
+        mergedOptions);
       if (response.statusCode < 200 || response.statusCode >= 300) {
         return {
           ok: false,
@@ -905,10 +917,11 @@ export class EhHttpClient {
   // 只有 gid 时走 /g/{gid}/，由站点 302 到带 token 的地址再解析详情。
   // 本地文件夹导入的图册没有 token，列表搜索又常常命中不到，只能靠这条。
   async loadGalleryDetailByGid(gid: number, site: GallerySite = GallerySite.E,
-    referer: string = EhUrl.getReferer(site)): Promise<GalleryDetailLoadResult> {
+    referer: string = EhUrl.getReferer(site),
+    requestOptions?: EhTextRequestOptions): Promise<GalleryDetailLoadResult> {
     const url = EhUrl.getGalleryDetailUrlByGid(gid, site);
     try {
-      const response = await this.getText(url, referer, 120000);
+      const response = await this.getText(url, referer, 120000, requestOptions);
       if (response.statusCode < 200 || response.statusCode >= 300) {
         return {
           ok: false,

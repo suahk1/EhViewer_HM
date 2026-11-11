@@ -25,7 +25,7 @@ const LOCAL_GALLERY_GID_RANGE: number = 100000000;
 
 // 图册身份归一：去掉目录名前的 gid、大小写、符号与下划线的差异，
 // 只留下可用于判重的实质字符。同一图册无论来自 DB 还是本地目录都能对上。
-function normalizeGalleryIdentity(title: string): string {
+export function normalizeGalleryIdentity(title: string): string {
   let value = title.trim().toLowerCase();
   value = value.replace(/^\d{4,}-/, '');
   value = value.replace(/[\s_~～]+/g, ' ');
@@ -194,6 +194,12 @@ export class EhDownloadStore {
 
   contains(gid: number): boolean {
     return this.findIndex(gid) >= 0;
+  }
+
+  // 按 gid 取单条下载记录（详情页本地预览/阅读判定用）。
+  getItemByGid(gid: number): DownloadInfo | undefined {
+    const index = this.findIndex(gid);
+    return index < 0 ? undefined : cloneDownloadInfo(this.items[index]);
   }
 
   addGallery(gallery: GalleryInfo, label: string = '', time: number = 0): DownloadInfo | null {
@@ -453,6 +459,16 @@ export class EhDownloadStore {
       merged.total = existing.total > 0 ? existing.total : merged.total;
       merged.fileSize = existing.fileSize;
       merged.time = existing.time;
+      // 本地封面是磁盘上的真实文件，联网拉不到云端封面（网络阻断/云端已删）时
+      // 升级成云端记录会把封面变成永远加载失败的占位图，必须保留本地封面。
+      const existingThumb = existing.thumb ?? '';
+      if (existingThumb.startsWith('/') || existingThumb.startsWith('file://')) {
+        merged.thumb = existingThumb;
+      }
+      // 重新匹配升级时不能把用户已设置的下载分组冲掉。
+      if (merged.label.length === 0 && existing.label.length > 0) {
+        merged.label = existing.label;
+      }
       this.items[localIndex] = merged;
       this.notifyChanged();
       return 'merged';
@@ -503,7 +519,35 @@ export class EhDownloadStore {
     return this.mergeImportedItem(item);
   }
 
-  // 纯本地图档（token 为空）里按规范化标题找同一条目。
+  // 重新扫描时发现同 gid 的真实目录：若已有记录的目录已失效（换机/迁移后路径断，
+  // 表现为列表有名字、无预览图、详情无图），把这份有效目录绑回去恢复阅读。
+  // 已有目录仍有效时返回 false，避免把同一画廊的多余副本抢绑上来。
+  rebindMissingDirectory(gid: number, directory: string, pageCount: number, thumb: string): boolean {
+    const index = this.findIndex(gid);
+    if (index < 0) {
+      return false;
+    }
+    const item = this.items[index];
+    if (item.archiveUri.length > 0 && this.directoryHasImages(item.archiveUri)) {
+      return false;
+    }
+    item.archiveUri = directory;
+    if (thumb.length > 0) {
+      item.thumb = thumb;
+    }
+    if (pageCount > 0) {
+      item.total = pageCount;
+      item.pages = pageCount;
+      item.finished = pageCount;
+      item.downloaded = pageCount;
+    }
+    if (item.state !== DownloadState.Downloading && item.state !== DownloadState.Wait &&
+      (item.state === DownloadState.Missing || (item.total > 0 && item.finished >= item.total))) {
+      item.state = DownloadState.Finish;
+    }
+    this.notifyChanged();
+    return true;
+  }
   findLocalIdentityIndex(title: string): number {
     const identity = normalizeGalleryIdentity(title);
     if (identity.length === 0) {
@@ -755,8 +799,43 @@ export class EhDownloadStore {
     updated.downloaded = previous.downloaded;
     updated.total = previous.total > 0 ? previous.total : updated.total;
     updated.fileSize = previous.fileSize;
+    // 详情联网回写不能把本地封面刷成云端 URL：网络一断列表就全是 X 重试。
+    // 本地封面（磁盘文件）优先，云端 URL 只在本地封面缺失时才采纳。
+    const previousThumb = previous.thumb ?? '';
+    if (previousThumb.startsWith('/') || previousThumb.startsWith('file://')) {
+      updated.thumb = previousThumb;
+    }
     this.items[index] = updated;
     this.notifyChanged();
+  }
+
+  // 对账/导入时回填真实的下载时间：DP 迁移记录的 time 全是导入时刻，
+  // 按时间排序时无法区分早晚。
+  setTime(gid: number, time: number): void {
+    const index = this.findIndex(gid);
+    if (index < 0 || time <= 0 || this.items[index].time === time) {
+      return;
+    }
+    this.items[index].time = time;
+    this.notifyChanged();
+  }
+
+  // 云端已确认删除（cloudState=GONE）但本地目录有效：清掉失效的云端身份，
+  // 转成纯本地图册（手机图标、本地详情面板、本地阅读），详情不再挂在
+  // 「正在加载云端数据」上。保留真实 gid 便于日后画廊复活时重新绑定。
+  clearCloudIdentity(gid: number): boolean {
+    const index = this.findIndex(gid);
+    if (index < 0) {
+      return false;
+    }
+    const item = this.items[index];
+    if (item.token.length === 0 && (item.cloudState === undefined || item.cloudState.length === 0)) {
+      return false;
+    }
+    item.token = '';
+    item.cloudState = '';
+    this.notifyChanged();
+    return true;
   }
 
   setProgress(gid: number, finished: number, total: number, downloaded: number = 0): void {

@@ -15,13 +15,18 @@ import {
   ehDownloadFileStore,
 } from '../services/EhDownloadFileStore';
 import { ehDownloadManager } from '../services/EhDownloadManager';
+import { EhHttpClient } from '../services/EhHttpClient';
 import { remoteStorageDownloadDeletionService } from '../services/RemoteStorageDownloadDeletionService';
 import { REMOTE_STORAGE_PURPOSE_DOWNLOADS, remoteStorageProfileStore } from '../services/RemoteStorageProfiles';
 import { FloatingActionSideController, storedFloatingActionSide } from '../services/FloatingActionSideSupport';
 import { BrowsePosition, ehBrowsePositionStore } from '../services/EhBrowsePositionStore';
 import { ehSearchHistoryStore } from '../services/EhSearchHistoryStore';
-import { CLOUD_STATE_GONE, DownloadInfo, DownloadLabel, DownloadProgress, DownloadState, ehDownloadStore } from '../services/EhDownloadStore';
-import { LocalImportProgress, LocalImportReport, ensureLocalThumbnail, importLocalGalleryFolder } from '../services/LocalFolderImportService';
+import { CLOUD_STATE_GONE, DownloadInfo, DownloadLabel, DownloadProgress, DownloadState, ehDownloadStore, normalizeGalleryIdentity } from '../services/EhDownloadStore';
+import { LocalImportProgress, LocalImportReport, ReconcileReport, ensureLocalThumbnail,
+  galleryIdFromName, importLocalGalleryFolder, logScan, matchGalleryOnServer,
+  reconcileDownloadRecords } from '../services/LocalFolderImportService';
+import { DOWNLOAD_MATCH_PROGRESS_KEY, DOWNLOAD_MATCH_REPORT_KEY, DOWNLOAD_MATCH_STATE_KEY, MATCH_DIALOG_MINIMIZED_KEY, DownloadMatchProgress,
+  DownloadMatchReport, downloadMatchService } from '../services/DownloadMatchService';
 import {
   FLOATING_ACTION_HOLDING_HAND_REVISION_KEY,
   FLOATING_ACTION_SIDE_REVISION_KEY,
@@ -60,6 +65,7 @@ import {
   leaveEmbeddedReaderFullscreen,
   mainContentWidthFallbackVp,
   rememberMainContentWidthVp,
+  setMainWindowKeepScreenOn,
 } from '../services/WindowChromeController';
 import {
   peekPendingContinuationSnapshot,
@@ -113,6 +119,8 @@ import {
 } from '../shared/AppRuntime';
 import {
   themeAccentTextColor,
+  themeDangerBackground,
+  themeDangerText,
   themeDividerColor,
   themeFieldBackground,
   themeOnPrimaryText,
@@ -122,6 +130,7 @@ import {
   themeSecondaryText,
   themeShadowColor,
   themeSurface,
+  themeSurfaceVariant,
   themeTertiaryText,
 } from '../shared/AppPalette';
 import {
@@ -133,6 +142,15 @@ import {
   uiMaterialForegroundColor,
   uiRadius,
   uiSearchFieldHeight,
+  uiDialogSurfaceBackground,
+  uiDialogBlurStyle,
+  uiDialogBlurOptions,
+  uiDialogMaterial,
+  uiDialogSurfaceShadow,
+  uiButtonHighlightBorderColor,
+  uiPopupEffectBackground,
+  uiGlassFloatingButtonEffect,
+  uiDockHighlightBorder,
 } from '../shared/AppSurfaceStyle';
 import { GalleryHomeNavBarHost, GalleryToolbarOffset, GalleryToolbarOffsetBinding } from './GalleryNavHosts';
 import { PopupScrim } from './PopupScrim';
@@ -380,6 +398,216 @@ export struct DownloadScene {
   @State settleSummaryLines: string[] = [];
   @State blockingBusyVisible: boolean = false;
   @State blockingBusyMessage: string = 'Loading...';
+  // 进度数字独立一行：拼进 message 会把弹窗首行塞爆，出现截断（F-113）。
+  @State blockingBusyProgressText: string = '';
+  // 后台云端匹配（F-115）：弹窗是全局服务的观察者，匹配中/完成态都不可 Back 取消。
+  @StorageProp(DOWNLOAD_MATCH_PROGRESS_KEY) @Watch('onDownloadMatchProgress') downloadMatchProgress: DownloadMatchProgress = {
+    state: '', current: 0, total: 0, round: 0, phase: ''
+  };
+  @StorageProp(DOWNLOAD_MATCH_REPORT_KEY) downloadMatchReport: DownloadMatchReport = {
+    total: 0, matched: 0, cloudGone: 0, unchanged: 0, pendingNetwork: 0, rounds: 0
+  };
+  @State matchDialogVisible: boolean = false;
+  @State matchDialogDone: boolean = false;
+
+  onDownloadMatchProgress(): void {
+    this.syncMatchDialogFromService();
+    // 匹配期间强制亮屏：进度跑几分钟到十几分钟，息屏会中断观察（F-115）。
+    setMainWindowKeepScreenOn(this.downloadMatchProgress.state === 'matching').catch(() => {});
+  }
+
+  // 按全局服务当前进度同步弹窗：切界面回来组件重挂载时立刻恢复，不等下一次广播。
+  private syncMatchDialogFromService(): void {
+    // 最小化状态下不展开：进度只在右上角圆点上体现，用户点圆点才恢复。
+    if (this.matchDialogMinimized) {
+      this.matchDialogDone = this.downloadMatchProgress.state === 'done';
+      return;
+    }
+    // 已点过「知道了」的完成报告不再重复弹（F-118：重进下载页烦人的旧报告）。
+    const revision = AppStorage.get<number>(DOWNLOAD_MATCH_STATE_KEY) ?? 0;
+    if (this.downloadMatchProgress.state === 'done' && this.matchDoneConfirmedRevision === revision) {
+      return;
+    }
+    if (this.downloadMatchProgress.state === 'matching') {
+      this.matchDialogVisible = true;
+      this.matchDialogDone = false;
+      this.blockingBusyMessage = this.downloadMatchProgress.phase === 'cloud' ?
+        'Matching cloud identity...' : 'Matching local galleries...';
+      // 进度行直接用中文拼（BlockingBusyOverlay 的 progressText 不走 uiStatusText）。
+      this.blockingBusyProgressText = this.downloadMatchProgress.current.toString() + ' / ' +
+        this.downloadMatchProgress.total.toString() + ' · 第 ' +
+        this.downloadMatchProgress.round.toString() + ' 轮';
+    } else if (this.downloadMatchProgress.state === 'done') {
+      this.matchDialogVisible = true;
+      this.matchDialogDone = true;
+      // 报告 total 与弹窗进度 total 同源（候选总数），数量口径一致不再「对不上」。
+      const stoppedPrefix = downloadMatchService.wasStopped() ? 'Stopped. ' : '';
+      this.blockingBusyMessage = stoppedPrefix + 'Total ' + this.downloadMatchReport.total.toString() +
+        ' · matched ' + this.downloadMatchReport.matched.toString() +
+        ' · cloud gone ' + this.downloadMatchReport.cloudGone.toString() +
+        ' · unchanged ' + this.downloadMatchReport.unchanged.toString() +
+        ' · pending network ' + this.downloadMatchReport.pendingNetwork.toString() +
+        ' · rounds ' + this.downloadMatchReport.rounds.toString();
+      this.blockingBusyProgressText = '';
+    } else {
+      this.matchDialogVisible = false;
+      this.matchDialogDone = false;
+    }
+  }
+
+  // 弹窗最小化（F-118）：AppStorage 持久化——组件重挂载（切界面回来）时
+  // 状态不丢，后台锁定不被「回下载页自动弹窗」破坏（F-124 用户反馈）。
+  @StorageProp(MATCH_DIALOG_MINIMIZED_KEY) matchDialogMinimized: boolean = false;
+  // 已确认的完成报告 revision：dismissed 后重进页面不再重复弹同一份报告。
+  private matchDoneConfirmedRevision: number = -1;
+
+  minimizeMatchDialog(): void {
+    this.matchDialogVisible = false;
+    AppStorage.setOrCreate<boolean>(MATCH_DIALOG_MINIMIZED_KEY, true);
+  }
+
+  restoreMatchDialog(): void {
+    AppStorage.setOrCreate<boolean>(MATCH_DIALOG_MINIMIZED_KEY, false);
+    this.syncMatchDialogFromService();
+    this.matchDialogVisible = true;
+  }
+
+  dismissMatchDialog(): void {
+    this.matchDialogVisible = false;
+    this.matchDialogDone = false;
+    AppStorage.setOrCreate<boolean>(MATCH_DIALOG_MINIMIZED_KEY, false);
+    // 记录已确认的报告版本：重进下载页不再重复弹同一份完成报告。
+    this.matchDoneConfirmedRevision = AppStorage.get<number>(DOWNLOAD_MATCH_STATE_KEY) ?? 0;
+    setMainWindowKeepScreenOn(false).catch(() => {});
+  }
+
+  // ---- 手动查重（F-116）：按规范化标题分组，重复组由用户勾选处理 ----
+  @State dedupePanelVisible: boolean = false;
+  @State dedupeGroups: DownloadInfo[][] = [];
+  // 待删除的 gid（默认组内除第一条外全部标记，用户可点行切换）
+  @State dedupeMarked: string[] = [];
+  // gid → 已有分组 key 映射：同 gid 多条记录直接归并同组（多维判定第一维度）。
+  private gidToDedupeKey: Map<number, string> = new Map<number, string>();
+  // 从查重点条目进详情后，关闭详情时自动恢复查重弹窗。
+  @State dedupeRestoreOnDetailClose: boolean = false;
+
+  private openDedupePanel(): void {
+    this.downloadActionsExpanded = false;
+    this.buildDedupeGroups();
+    this.dedupeRestoreOnDetailClose = false;
+    this.dedupePanelVisible = true;
+  }
+
+  private closeDedupePanel(): void {
+    this.dedupePanelVisible = false;
+    this.dedupeRestoreOnDetailClose = false;
+    this.dedupeGroups = [];
+    this.dedupeMarked = [];
+  }
+
+  // 点条目看详情：只隐藏弹窗（保留分组与勾选），详情关闭后自动恢复（F-123
+  // 用户要求：能对比图册）。数据不清，回来继续处理。
+  private hideDedupeForDetail(): void {
+    this.dedupePanelVisible = false;
+    this.dedupeRestoreOnDetailClose = true;
+  }
+
+  // 头部统计行：组数 / 标记数，让用户不看列表也知道进度。
+  private dedupeHeaderSummary(): string {
+    const groups = this.dedupeGroups.length.toString();
+    const marked = this.dedupeMarked.length.toString();
+    return 'Duplicate groups ' + groups + ' · marked ' + marked;
+  }
+
+  private buildDedupeGroups(): void {
+    // F-123 用户反馈「完全是乱查重」：旧逻辑只按标题归一化分组——同一作者的
+    // 系列作品、同名不同本（无修正/汉化变体）全部误判为重复。
+    // 修复：分组 key = 标题归一化 + 页数。真重复（同一本重复下载/镜像）页数
+    // 必然一致；系列不同本页数几乎不可能相同，自然分开。
+    // 多维度判定（F-124 用户要求）：① gid 相同直接成组（最可靠信号，同一本的
+    // 镜像/重复记录）；② 标题归一化 + 页数 + 文件大小三维度一致才判重——
+    // 同系列不同本页数/大小几乎不可能完全一致。
+    const map = new Map<string, DownloadInfo[]>();
+    const order: string[] = [];
+    for (let i = 0; i < this.items.length; i++) {
+      const item = this.items[i];
+      const pages = item.total > 0 ? item.total : item.pages;
+      let identityKey = '';
+      if (item.gid > 0) {
+        const gidOwner = this.gidToDedupeKey.get(item.gid);
+        if (gidOwner !== undefined) {
+          identityKey = gidOwner;
+        } else {
+          identityKey = 'gid:' + item.gid.toString();
+          this.gidToDedupeKey.set(item.gid, identityKey);
+        }
+      }
+      if (identityKey.length === 0) {
+        const identity = normalizeGalleryIdentity(item.title);
+        if (identity.length === 0) {
+          continue;
+        }
+        identityKey = identity + '#' + (pages > 0 ? pages.toString() : 'unknown') +
+          '#' + (item.fileSize > 0 ? item.fileSize.toString() : 'unknown');
+      }
+      if (!map.has(identityKey)) {
+        map.set(identityKey, []);
+        order.push(identityKey);
+      }
+      map.get(identityKey)!.push(item);
+    }
+    const groups: DownloadInfo[][] = [];
+    for (let i = 0; i < order.length; i++) {
+      const members = map.get(order[i])!;
+      if (members.length > 1) {
+        groups.push(members);
+      }
+    }
+    this.dedupeGroups = groups;
+    this.gidToDedupeKey = new Map<number, string>();
+    // 默认标记：每组除第一条（保留）外的其余全部选中
+    const marked: string[] = [];
+    for (let i = 0; i < groups.length; i++) {
+      for (let j = 1; j < groups[i].length; j++) {
+        marked.push(groups[i][j].gid.toString() + ':' + groups[i][j].archiveUri);
+      }
+    }
+    this.dedupeMarked = marked;
+  }
+
+  private dedupeKeyOf(item: DownloadInfo): string {
+    return item.gid.toString() + ':' + item.archiveUri;
+  }
+
+  private toggleDedupeMark(item: DownloadInfo): void {
+    const key = this.dedupeKeyOf(item);
+    const index = this.dedupeMarked.indexOf(key);
+    if (index >= 0) {
+      const next = this.dedupeMarked.slice();
+      next.splice(index, 1);
+      this.dedupeMarked = next;
+    } else {
+      this.dedupeMarked = this.dedupeMarked.concat([key]);
+    }
+  }
+
+  private isDedupeMarked(item: DownloadInfo): boolean {
+    return this.dedupeMarked.indexOf(this.dedupeKeyOf(item)) >= 0;
+  }
+
+  private applyDedupeDelete(): void {
+    let removed = 0;
+    for (let i = 0; i < this.items.length; i++) {
+      const item = this.items[i];
+      if (this.isDedupeMarked(item)) {
+        // 查重副本没有保留价值：记录与重复文件一起清掉。
+        this.removeItem(item);
+        removed++;
+      }
+    }
+    this.buildDedupeGroups();
+    this.showFloatingStatus('Deduped: removed ' + removed.toString() + ' duplicate items', 6000);
+  }
   @State downloadJumpPanelVisible: boolean = false;
   @State downloadJumpPopupHeight: number = 0;
   @State downloadJumpDraft: string = '1';
@@ -450,6 +678,16 @@ export struct DownloadScene {
     this.syncDownloadContentWidthFromWindow();
     markCurrentRouteRightPane(this.useSplitLayout());
     setActiveBackHandler(this.boundSystemBack);
+    // 进入下载页自动触发云端匹配（F-115）：任务在全局服务上跑，弹窗只是观察者；
+    // 幂等，重复进入/切界面都不会叠加。
+    const matchContext = getAbilityContext();
+    if (matchContext !== undefined && !downloadMatchService.isRunning() &&
+      !downloadMatchService.hasAutoRanThisSession() && downloadMatchService.hasPendingWork()) {
+      downloadMatchService.startMatch(matchContext);
+    }
+    // 切界面回来时组件重新挂载，@State 弹窗态是初始值：必须按服务当前状态
+    // 立即恢复弹窗，否则弹窗消失约 1 秒后等下一次进度广播才重新出现。
+    this.syncMatchDialogFromService();
     this.unsubscribeStore = ehDownloadStore.subscribe((items: DownloadInfo[], labels: DownloadLabel[]) => {
       this.items = items;
       this.labels = labels;
@@ -558,6 +796,24 @@ export struct DownloadScene {
   }
 
   private handleSystemBack(): boolean {
+    // 云端匹配弹窗不允许取消：任务必须跑到收敛，Back 直接吞掉（F-115 用户要求）。
+    if (this.matchDialogVisible) {
+      return true;
+    }
+    // 详情从查重面板进入时，Back 先关详情回到查重面板（F-120 用户要求：
+    // 点条目直达详情、侧滑返回回到查重），详情关闭后查重面板仍然在。
+    if (this.showDetail) {
+      if (runDetailBackHandler()) {
+        return true;
+      }
+      this.closeDetail();
+      return true;
+    }
+    // 查重面板开着时 Back 只关面板。
+    if (this.dedupePanelVisible) {
+      this.closeDedupePanel();
+      return true;
+    }
     // 自绘确认层要先吃掉返回，否则会直接退出页面、状态还留着。
     if (this.deleteConfirmVisible) {
       this.closeDeleteConfirm();
@@ -977,9 +1233,9 @@ export struct DownloadScene {
     });
   }
 
-  private showFloatingStatus(message: string): void {
+  private showFloatingStatus(message: string, durationMs: number = 2200): void {
     this.statusText = message;
-    showRaisedToast(this.getUIContext(), uiStatusText(message));
+    showRaisedToast(this.getUIContext(), uiStatusText(message), durationMs);
   }
 
   private prepareDownloadBrowsePosition(): void {
@@ -1182,9 +1438,19 @@ export struct DownloadScene {
 
   private runAskSecondary(): void {
     const kind = this.askKind;
+    const text = this.askTextPayload;
     this.dismissAsk();
     if (kind === 'mobileData') {
       this.statusText = 'Download waits for Wi-Fi or confirmation';
+    } else if (kind === 'removeLocalGallery') {
+      // 只删列表记录，本地文件保留（用户可重新扫描登记回来）。
+      const gid = Number.parseInt(text);
+      if (!Number.isNaN(gid)) {
+        ehDownloadStore.removeGallery(gid);
+        this.persistDownloads();
+        this.closeDetail();
+        this.showFloatingStatus('Removed 1 record (files kept)');
+      }
     }
   }
 
@@ -1261,12 +1527,14 @@ export struct DownloadScene {
 
   private showBlockingBusy(message: string): void {
     this.blockingBusyMessage = message;
+    this.blockingBusyProgressText = '';
     this.blockingBusyVisible = true;
   }
 
   private hideBlockingBusy(): void {
     this.blockingBusyVisible = false;
     this.blockingBusyMessage = 'Loading...';
+    this.blockingBusyProgressText = '';
   }
 
   private computeVisibleDownloadItems(revision: number): Promise<DownloadInfo[] | undefined> {
@@ -2000,9 +2268,24 @@ export struct DownloadScene {
   // 会逐条查服务器补云端身份，所以慢一点，但登记出来的图册能云端能本地，
   // 不再是以前那种「添加快、点开却读不出来」的纯本地登记。
   private restoreDownloadedItems(): void {
+    this.runScanFlow().catch((error: Error) => {
+      this.showStatusHint('Scan failed: ' + error.message, 2600);
+    });
+  }
+
+  // 扫描磁盘登记（可 await：顶栏一条龙恢复流程复用）。
+  // 防重入（F-118）：扫描进行中再点 FAB「扫描」会并发双扫描——保活互踩 +
+  // store 并发写，是「卡顿后闪退」的直接嫌疑。进行中一律忽略并提示。
+  private scanningInFlight: boolean = false;
+
+  private async runScanFlow(): Promise<void> {
     const context = getAbilityContext();
     if (context === undefined) {
       this.statusText = 'Scan needs app context';
+      return;
+    }
+    if (this.scanningInFlight) {
+      this.showFloatingStatus('Scan already running', 2600);
       return;
     }
     const root = ehDownloadFileStore.currentDownloadRoot(context);
@@ -2010,21 +2293,85 @@ export struct DownloadScene {
       this.statusText = 'Download folder is not available';
       return;
     }
+    this.scanningInFlight = true;
     this.showBlockingBusy('Scanning local galleries...');
-    importLocalGalleryFolder(context, root, currentGallerySite(), (progress: LocalImportProgress) => {
-      this.blockingBusyMessage = 'Scanning local galleries... ' + progress.current.toString() +
-        ' / ' + progress.total.toString();
-    }).then(async (report: LocalImportReport) => {
+    try {
+      const report = await importLocalGalleryFolder(context, root, currentGallerySite(),
+        (progress: LocalImportProgress) => {
+          this.blockingBusyMessage = 'Scanning local galleries...';
+          this.blockingBusyProgressText = progress.current.toString() + ' / ' + progress.total.toString();
+        });
       await ehDownloadStore.save(context);
       this.hideBlockingBusy();
       this.statusText = 'Added ' + report.added.toString() + ' · matched ' + report.matched.toString() +
         ' · merged ' + report.merged.toString() + ' · local ' + report.localOnly.toString() +
         ' · skipped ' + report.duplicated.toString();
       this.showStatusHint(this.statusText, 3200);
-    }).catch((error: Error) => {
+    } catch (error) {
       this.hideBlockingBusy();
-      this.showStatusHint('Scan failed: ' + error.message, 2600);
-    });
+      throw error as Error;
+    } finally {
+      this.scanningInFlight = false;
+    }
+  }
+
+  // 顶栏循环箭头（F-115）：一条龙恢复——扫描磁盘登记 → 本地对账 → 云端匹配。
+  // 记录被误清/换机空库时，点这一个按钮就能从磁盘完整重建。
+  private async runFullRecoveryFlow(): Promise<void> {
+    const context = getAbilityContext();
+    if (context === undefined) {
+      this.statusText = 'Recovery needs app context';
+      return;
+    }
+    // 下载列表为空时先扫磁盘（有记录则跳过扫描，直接对账+匹配）。
+    if (ehDownloadStore.getItems().length === 0) {
+      await this.runScanFlow();
+    }
+    await this.rematchLocalGalleries();
+  }
+
+  // 「重新匹配」按钮（F-115）：阶段 1 本地对账（blocking 弹窗，快）；
+  // 阶段 2 云端匹配交给全局服务（自动弹窗接管显示，切界面/切后台不中断）。
+  private async rematchLocalGalleries(): Promise<void> {
+    const context = getAbilityContext();
+    if (context === undefined) {
+      this.statusText = 'Rematch needs app context';
+      return;
+    }
+    // 防重入（F-118 举一反三）：对账+匹配链路与扫描一样禁止并发触发。
+    if (this.scanningInFlight || downloadMatchService.isRunning()) {
+      this.showFloatingStatus('Scan already running', 2600);
+      return;
+    }
+    this.scanningInFlight = true;
+    try {
+      await this.rematchLocalGalleriesInner(context);
+    } finally {
+      this.scanningInFlight = false;
+    }
+  }
+
+  private async rematchLocalGalleriesInner(context: common.UIAbilityContext): Promise<void> {
+    let reconcileReport: ReconcileReport | null = null;
+    this.showBlockingBusy('Reconciling local galleries...');
+    try {
+      reconcileReport = await reconcileDownloadRecords(context,
+        (progress: LocalImportProgress) => {
+          this.blockingBusyMessage = 'Reconciling local galleries...';
+          this.blockingBusyProgressText = progress.current.toString() + ' / ' + progress.total.toString();
+        });
+    } catch (error) {
+      this.hideBlockingBusy();
+      this.showFloatingStatus('Reconcile failed: ' + error.message);
+      return;
+    }
+    this.hideBlockingBusy();
+    this.showFloatingStatus('Reconciled ok ' + reconcileReport.ok.toString() + ' · fixed ' +
+      reconcileReport.fixed.toString() + ' · removed ' + reconcileReport.removed.toString(), 6000);
+    // 手动触发 = 全量重校验（force）：已标记 ok/gone 的也重新探测一遍。
+    if (!downloadMatchService.isRunning()) {
+      await downloadMatchService.startMatch(context, true);
+    }
   }
 
   private async ensurePublicDownloadAccess(context: common.UIAbilityContext): Promise<boolean> {
@@ -2372,9 +2719,10 @@ export struct DownloadScene {
     }
     this.deleteConfirmationDialogOpen = true;
     this.askTextPayload = item.gid.toString();
+    // 与下载页删除弹窗同一套语义（F-114 追加）：主按钮删记录+文件，副按钮只删记录保留文件。
     this.askConfirm('removeLocalGallery', uiText('Remove'),
-      uiText('Remove this local gallery record and delete its files?'),
-      uiText('Delete local gallery'), '', true, true);
+      uiText('Delete the list record only, or delete the local gallery with its files?'),
+      uiText('Delete local gallery'), uiText('Remove record only'), true, true);
   }
 
   // 启动时按磁盘把本地图册的页数/体积/封面刷新一遍：老记录的 pages 是服务器页数，
@@ -2459,6 +2807,11 @@ export struct DownloadScene {
     this.restoreDetailWithFade = false;
     this.activeSplitPane = SPLIT_PANE_FOCUS_LEFT;
     this.showDetail = false;
+    // F-123：从查重点条目进详情，看完关详情自动回到查重弹窗（数据保留）。
+    if (this.dedupeRestoreOnDetailClose && this.dedupeGroups.length > 0) {
+      this.dedupeRestoreOnDetailClose = false;
+      this.dedupePanelVisible = true;
+    }
     this.localDetailGid = -1;
     this.syncDownloadContentWidthForCurrentLayout();
     markCurrentRouteRightPane(false);
@@ -2964,6 +3317,7 @@ export struct DownloadScene {
           this.searchCategory !== GalleryCategory.None || this.minRating > 0,
         showSearchButton: !this.searchBarVisible,
         showFavoriteButton: !this.searchBarVisible,
+        showCloudMatchButton: !this.searchBarVisible,
         showBackButton: this.searchBarVisible,
         searchMode: this.searchBarVisible,
         searchPlaceholder: 'Search downloads',
@@ -2997,6 +3351,9 @@ export struct DownloadScene {
         },
         onFavoriteButton: () => {
           this.openDownloadLabelDrawer();
+        },
+        onCloudMatch: () => {
+          this.runFullRecoveryFlow();
         }
       })
 
@@ -3127,12 +3484,23 @@ export struct DownloadScene {
             onRestore: () => {
               this.restoreDownloadedItems();
             },
+            onRematch: () => {
+              this.rematchLocalGalleries();
+            },
+            onDedupe: () => {
+              this.openDedupePanel();
+            },
             onRandom: () => {
               this.openRandomDownload();
             },
             onTranslate: () => {
-              ehTranslationService.setEnabled(!this.translationEnabled);
-                showTranslationToggleFeedback(this.getUIContext(), !this.translationEnabled);
+              const nextTranslation = !this.translationEnabled;
+                ehTranslationService.setEnabled(nextTranslation);
+                showTranslationToggleFeedback(this.getUIContext(), nextTranslation);
+
+              console.info('[TranslationDiag] FAB toggle: next=' + nextTranslation.toString() +
+                ' storageReadback=' + (AppStorage.get<boolean>(TRANSLATION_ENABLED_KEY) ?? false).toString() +
+                ' storageLinkReadback=' + this.translationEnabled.toString());
             },
             onSelectAll: () => {
               this.selectAllVisibleDownloads();
@@ -3377,9 +3745,77 @@ export struct DownloadScene {
         this.downloadListPane()
 
         if (this.blockingBusyVisible) {
-          BlockingBusyOverlay({ message: this.blockingBusyMessage })
+          BlockingBusyOverlay({ message: this.blockingBusyMessage,
+            progressText: this.blockingBusyProgressText })
             .zIndex(40)
             .transition(TransitionEffect.OPACITY.animation({ duration: 140, curve: Curve.EaseOut }))
+        }
+
+        if (this.matchDialogVisible) {
+          BlockingBusyOverlay({ message: this.blockingBusyMessage,
+            progressText: this.blockingBusyProgressText,
+            isDone: this.matchDialogDone,
+            showStop: !this.matchDialogDone,
+            showMinimize: !this.matchDialogDone,
+            onStop: () => {
+              downloadMatchService.requestStop();
+            },
+            onMinimize: () => {
+              this.minimizeMatchDialog();
+            },
+            onDismiss: () => {
+              this.dismissMatchDialog();
+            },
+            onScrimTap: () => {
+              // F-120 红线：点弹窗外部=进行中切后台，完成态关闭（不放右上 ×）。
+              if (this.matchDialogDone) {
+                this.dismissMatchDialog();
+              } else {
+                this.minimizeMatchDialog();
+              }
+            } })
+            .zIndex(40)
+            .transition(TransitionEffect.OPACITY.animation({ duration: 140, curve: Curve.EaseOut }))
+        }
+
+        // 最小化圆点（F-120 重设计）：与 FAB 动作按钮同一套玻璃材质（44vp 圆、
+        // 1px 高光边、接触阴影），进行中 spinner+百分比，完成态主题色对勾。
+        if (this.matchDialogMinimized) {
+          Stack({ alignContent: Alignment.Center }) {
+            if (!this.matchDialogDone) {
+              LoadingProgress()
+                .width(22)
+                .height(22)
+                .color(themePrimaryText())
+              Text(Math.round(this.downloadMatchProgress.current * 100 /
+                Math.max(1, this.downloadMatchProgress.total)).toString() + '%')
+                .fontSize(9)
+                .fontWeight(FontWeight.Medium)
+                .fontColor(themePrimaryText())
+                .position({ x: 0, y: 30 })
+            } else {
+              SymbolGlyph($r('sys.symbol.checkmark_circle'))
+                .fontSize(26)
+                .fontWeight(FontWeight.Bold)
+                .fontColor([themePrimaryColor()])
+            }
+          }
+          .width(44)
+          .height(44)
+          .backgroundColor(uiPopupEffectBackground(themeSurface()))
+          .backgroundEffect(uiGlassFloatingButtonEffect())
+          .border(uiDockHighlightBorder())
+          .shadow({ radius: 6, color: themeShadowColor(), offsetX: 0, offsetY: 2 })
+          // 圆形（F-124 用户反馈：漏圆角成方块）+ 位置避开顶部搜索栏，
+          // 悬浮在列表区右上（覆盖列表内容可接受，不覆盖功能控件）。
+          .borderRadius(uiRadius(22))
+          .clip(true)
+          .position({ x: this.downloadContentWidth > 0 ? this.downloadContentWidth - 56 : 1160,
+            y: this.statusBarVp() + 130 })
+          .zIndex(40)
+          .onClick(() => {
+            this.restoreMatchDialog();
+          })
         }
 
         if (this.showReader) {
@@ -3412,6 +3848,145 @@ export struct DownloadScene {
           }
         })
 
+      }
+
+      if (this.dedupePanelVisible) {
+        // F-123 非全屏卡片（用户要求）：普通用户直观的弹窗+列表+勾选。
+        // 点弹窗外部关闭（红线）；点条目隐藏弹窗看图册，关详情自动恢复；
+        // 底部按钮在卡片内，天然避开 dock 底栏。
+        Stack({ alignContent: Alignment.Center }) {
+          PopupScrim({
+            onDismiss: () => {
+              this.closeDedupePanel();
+            }
+          })
+
+          Column({ space: 10 }) {
+            Row({ space: 8 }) {
+              Text(uiText('Duplicate check'))
+                .fontSize(18)
+                .fontWeight(FontWeight.Bold)
+                .fontColor(themePrimaryText())
+              Blank()
+              Text(uiStatusText(this.dedupeHeaderSummary()))
+                .fontSize(13)
+                .fontWeight(FontWeight.Medium)
+                .fontColor(themePrimaryText())
+            }
+            .width('100%')
+
+            if (this.dedupeGroups.length === 0) {
+              Text(uiText('No duplicates found'))
+                .fontSize(13)
+                .fontColor(themeSecondaryText())
+                .width('100%')
+                .textAlign(TextAlign.Center)
+                .padding({ top: 16, bottom: 16 })
+            }
+
+            Scroll() {
+              Column({ space: 12 }) {
+                ForEach(this.dedupeGroups, (members: DownloadInfo[]) => {
+                  Column({ space: 6 }) {
+                    ForEach(members, (member: DownloadInfo, memberIndex: number) => {
+                      Row({ space: 8 }) {
+                        // 行首勾选框（F-123 用户要求）：勾=标记删除，直观。
+                        Checkbox({ name: this.dedupeKeyOf(member) })
+                          .select(this.isDedupeMarked(member))
+                          .selectedColor(themePrimaryColor())
+                          .width(20)
+                          .height(20)
+                          .onChange((checked: boolean) => {
+                            if (checked !== this.isDedupeMarked(member)) {
+                              this.toggleDedupeMark(member);
+                            }
+                          })
+                        Image(member.thumb)
+                          .width(42)
+                          .height(56)
+                          .objectFit(ImageFit.Cover)
+                          .borderRadius(uiRadius(6))
+                          .border({ width: 1, color: uiButtonHighlightBorderColor() })
+                        Column({ space: 2 }) {
+                          Text(member.title)
+                            .fontSize(15)
+                            .fontWeight(FontWeight.Medium)
+                            .fontColor(themePrimaryText())
+                            .maxLines(2)
+                            .textOverflow({ overflow: TextOverflow.Ellipsis })
+                            .width('100%')
+                          Text((member.total > 0 ? member.total : member.pages).toString() + 'P')
+                            .fontSize(13)
+                            .fontWeight(FontWeight.Medium)
+                            .fontColor(themeSecondaryText())
+                        }
+                        .layoutWeight(1)
+                        .alignItems(HorizontalAlign.Start)
+                        // 行尾「查看」（F-123 用户要求：点列表中的图册即跳转）
+                        Text(uiText('View'))
+                          .fontSize(14)
+                          .fontWeight(FontWeight.Bold)
+                          .fontColor(themePrimaryColor())
+                          .flexShrink(0)
+                      }
+                      .width('100%')
+                      .padding(8)
+                      .borderRadius(uiRadius(8))
+                      .backgroundColor(this.isDedupeMarked(member) ?
+                        uiMaterialBackground(themeDangerBackground()) : themeSurface())
+                      // 点条目主体 = 隐藏弹窗 → 打开图册详情（对比）→ 关详情自动恢复。
+                      .onClick(() => {
+                        this.hideDedupeForDetail();
+                        this.openDetailNow(member);
+                      })
+                    }, (member: DownloadInfo) => this.dedupeKeyOf(member))
+                  }
+                  .width('100%')
+                }, (members: DownloadInfo[]) => members[0].gid.toString())
+              }
+              .width('100%')
+            }
+            .constraintSize({ maxHeight: 330 })
+            .width('100%')
+            .scrollBar(BarState.Off)
+
+            Row({ space: 10 }) {
+              Button(uiText('Delete marked'))
+                .layoutWeight(1)
+                .height(40)
+                .fontSize(13)
+                .fontColor(uiMaterialForegroundColor(themeDangerText()))
+                .backgroundColor(uiMaterialBackground(themeDangerBackground()))
+                .enabled(this.dedupeMarked.length > 0)
+                .onClick(() => {
+                  this.applyDedupeDelete();
+                })
+              Button(uiText('Close'))
+                .layoutWeight(1)
+                .height(40)
+                .fontSize(13)
+                .fontColor(themePrimaryText())
+                .backgroundColor(themeSurfaceVariant())
+                .onClick(() => {
+                  this.closeDedupePanel();
+                })
+            }
+            .width('100%')
+          }
+          .width('92%')
+          .constraintSize({ maxWidth: 480, maxHeight: '78%' })
+          .padding(16)
+          .backgroundColor(uiMaterialBackground(uiDialogSurfaceBackground()))
+          .shadow(uiDialogSurfaceShadow())
+          .borderRadius(uiRadius(16))
+          .backgroundBlurStyle(uiDialogBlurStyle(), uiDialogBlurOptions())
+          .systemMaterial(uiDialogMaterial())
+          .zIndex(1)
+        }
+        .width('100%')
+        .height('100%')
+        .zIndex(30)
+        .transition(TransitionEffect.OPACITY.animation({ duration: 160, curve: Curve.EaseOut }))
       }
 
       if (this.showDetail) {
@@ -3511,7 +4086,8 @@ export struct DownloadScene {
               this.activeSplitPane = SPLIT_PANE_FOCUS_RIGHT;
             }
           })
-          .zIndex(29)
+          // F-120：从查重面板点条目进详情，详情层必须盖住查重面板(zIndex 30)。
+          .zIndex(35)
           .animation({ duration: this.splitDragging ? 0 : 220, curve: Curve.EaseOut })
           .transition(TransitionEffect.asymmetric(
             TransitionEffect.move(TransitionEdge.END).animation({ duration: 260, curve: Curve.EaseOut }),

@@ -1092,6 +1092,125 @@ function legacyUiMessage(text: string): string {
   if (text.indexOf('Scanning local galleries... ') === 0) {
     return '正在扫描本地图册… ' + text.substring(28);
   }
+  if (text.indexOf('Re-matching local galleries... ') === 0) {
+    // 英文前缀 'Re-matching local galleries... ' 实际 31 个字符，截多一位会吃掉进度数字。
+    return '正在重新匹配本地图册… ' + text.substring(31);
+  }
+  if (text === 'Matching cloud identity...') {
+    return '正在匹配云端身份数据…';
+  }
+  if (text === 'Matching local galleries...') {
+    return '正在匹配本地图册…';
+  }
+  if (text.indexOf('Stopped. Total ') === 0 && text.indexOf(' · matched ') > 0) {
+    // 停止后报告：Total N · matched X · cloud gone Y · unchanged Z · pending W · rounds R
+    const seg = (tag: string, nextTag: string): string =>
+      text.substring(text.indexOf(tag) + tag.length, text.indexOf(nextTag));
+    return '已停止。共 ' + text.substring(14, text.indexOf(' · matched ')) +
+      ' 条 · 已匹配 ' + seg(' · matched ', ' · cloud gone ') +
+      ' 条 · 云端已删除 ' + seg(' · cloud gone ', ' · unchanged ') +
+      ' 条 · 无变化 ' + seg(' · unchanged ', ' · pending network ') +
+      ' 条 · 待网络重试 ' + seg(' · pending network ', ' · rounds ') +
+      ' 条 · 共 ' + text.substring(text.indexOf(' · rounds ') + 10) + ' 轮';
+  }
+  if (text.indexOf('Total ') === 0 && text.indexOf(' · matched ') > 0) {
+    const seg2 = (tag: string, nextTag: string): string =>
+      text.substring(text.indexOf(tag) + tag.length, text.indexOf(nextTag));
+    return '共 ' + text.substring(6, text.indexOf(' · matched ')) +
+      ' 条 · 已匹配 ' + seg2(' · matched ', ' · cloud gone ') +
+      ' 条 · 云端已删除 ' + seg2(' · cloud gone ', ' · unchanged ') +
+      ' 条 · 无变化 ' + seg2(' · unchanged ', ' · pending network ') +
+      ' 条 · 待网络重试 ' + seg2(' · pending network ', ' · rounds ') +
+      ' 条 · 共 ' + text.substring(text.indexOf(' · rounds ') + 10) + ' 轮';
+  }
+  if (text.indexOf('Stopped. Matched ') === 0 && text.indexOf(' · cloud gone ') > 0) {
+    const head = text.substring(17, text.indexOf(' · cloud gone '));
+    return '已停止。已匹配 ' + head + ' 条 · 云端已删除 ' +
+      text.substring(text.indexOf(' · cloud gone ') + 14, text.indexOf(' · unchanged ')) +
+      ' 条 · 无变化 ' + text.substring(text.indexOf(' · unchanged ') + 13,
+        text.indexOf(' · pending network ')) + ' 条 · 待网络重试 ' +
+      text.substring(text.indexOf(' · pending network ') + 19, text.indexOf(' · rounds ')) +
+      ' 条 · 共 ' + text.substring(text.indexOf(' · rounds ') + 10) + ' 轮';
+  }
+  if (text.indexOf('Matched ') === 0 && text.indexOf(' · cloud gone ') > 0) {
+    return '已匹配 ' + text.substring(8, text.indexOf(' · cloud gone ')) + ' 条 · 云端已删除 ' +
+      text.substring(text.indexOf(' · cloud gone ') + 14, text.indexOf(' · unchanged ')) +
+      ' 条 · 无变化 ' + text.substring(text.indexOf(' · unchanged ') + 13,
+        text.indexOf(' · pending network ')) + ' 条 · 待网络重试 ' +
+      text.substring(text.indexOf(' · pending network ') + 19, text.indexOf(' · rounds ')) +
+      ' 条 · 共 ' + text.substring(text.indexOf(' · rounds ') + 10) + ' 轮';
+  }
+  if (text.indexOf('Reconciling local galleries... ') === 0) {
+    // 英文前缀 'Reconciling local galleries... ' 实际 32 个字符。
+    return '正在对账本地图册… ' + text.substring(32);
+  }
+  if (text === 'Reconciling local galleries...') {
+    return '正在对账本地图册…';
+  }
+  if (text.indexOf('Reconcile failed: ') === 0) {
+    return '对账失败：' + text.substring(18);
+  }
+  if (text === 'Tap Restore again within 5 seconds to confirm the reset') {
+    return '5 秒内再点一次「恢复」以确认重置';
+  }
+  if (text.indexOf('Duplicate groups ') === 0 && text.indexOf(' · marked ') > 0) {
+    return '重复组 ' + text.substring(16, text.indexOf(' · marked ')) +
+      ' · 已标记 ' + text.substring(text.indexOf(' · marked ') + 10);
+  }
+  if (text === 'Will delete') {
+    return '将删除';
+  }
+  if (text === 'Tap to delete') {
+    return '点击切换为删除';
+  }
+  if (text === 'Open') {
+    return '查看详情';
+  }
+  if (text === 'All options will be reset to factory defaults. Cookies, downloads and history are not affected.') {
+    return '将全部选项重置为出厂默认；Cookie、下载和历史记录不受影响。';
+  }
+  if (text === 'This gallery will be removed from history. Downloads are not affected.') {
+    return '该画廊将从历史记录中移除；下载不受影响。';
+  }
+  if (text === 'This gallery will be removed from favorites.') {
+    return '该画廊将从收藏中移除。';
+  }
+  if (text === 'Restore') {
+    return '恢复';
+  }
+  if (text === 'Restore default settings') {
+    return '恢复默认设置';
+  }
+  if (text === 'All options restored to factory defaults') {
+    return '所有选项已恢复出厂默认';
+  }
+  if (text === 'Download location switched without migration') {
+    return '下载位置已切换（未迁移文件）';
+  }
+  if (text === 'Loading available models...') {
+    return '正在加载可用模型…';
+  }
+  if (text.indexOf('Deduped: removed ') === 0 && text.endsWith(' duplicate items')) {
+    return '查重完成：已删除 ' + text.substring(17, text.length - 16) + ' 条重复图册';
+  }
+  if (text.indexOf('Reconciled ok ') === 0) {
+    return text.replace('Reconciled ok ', '对账完成 正常 ')
+      .replace(' · fixed ', ' · 修复 ')
+      .replace(' · removed ', ' · 清理 ')
+      .replace(' · rematched ', ' · 已匹配 ')
+      .replace(' · unchanged ', ' · 无变化 ')
+      .replace(' · failed ', ' · 失败 ');
+  }
+  if (text === 'Re-matching local galleries...') {
+    return '正在重新匹配本地图册…';
+  }
+  if (text.indexOf('Rematched ') === 0 && text.indexOf(' · unchanged ') > 0) {
+    return '已重新匹配 ' + text.substring(10, text.indexOf(' · unchanged ')) + ' 条 · 无变化 ' +
+      text.substring(text.indexOf(' · unchanged ') + 13);
+  }
+  if (text === 'No local-only galleries to rematch') {
+    return '没有需要重新匹配的纯本地图册';
+  }
   if (text.indexOf('Download migration failed: ') === 0) {
     return '下载迁移失败：' + text.substring(27);
   }
@@ -1435,6 +1554,11 @@ export function zhText(text: string): string {
     case 'History': return '历史';
     case 'Downloads': return '下载';
     case 'Download': return '下载';
+    case ' is not available': return '暂不可用';
+    case 'Restore default settings': return '恢复默认设置';
+    case 'Clear search history': return '清除搜索历史';
+    case 'Reset all options to factory defaults; cookies, downloads and history are not affected': return '将全部选项重置为出厂默认；Cookie、下载和历史记录不受影响';
+    case ' is not available yet': return '暂不可用';
     case 'Download labels': return '下载标签';
     case 'Default download label': return '默认下载标签';
     case 'Remember download label': return '记住下载标签';
@@ -1462,7 +1586,7 @@ export function zhText(text: string): string {
     case 'Title and comment translation on': return '已开启标题与评论翻译';
     case 'Title and comment translation off': return '已关闭标题与评论翻译';
     case 'Translation feature': return '翻译功能';
-    case 'Show translation buttons on gallery lists, details and comments': return '在画廊列表、详情和评论中显示翻译按钮';
+    case 'Show translation buttons on gallery lists': return '在画廊列表中显示翻译按钮';
     case 'The translation toggle is in the lower-right toolbar': return '翻译开关在右下角工具栏中';
     case 'Comic translation': return '漫画翻译';
     case 'Record comic OCR debug data': return '记录漫画 OCR 调试信息';
@@ -1976,6 +2100,8 @@ export function zhText(text: string): string {
     case 'unknown uploader': return '未知上传者';
     case 'Clear all': return '清空';
     case 'Remove': return '移除';
+    case 'View': return '查看';
+    case 'Checked rows will be deleted. Tap a row to view the gallery.': return '勾选的条目将被删除；点条目可查看图册详情。';
     case 'Start all': return '全部开始';
     case 'Stop all': return '全部停止';
     case 'Start selected': return '开始选中';
@@ -2111,8 +2237,14 @@ export function zhText(text: string): string {
     case 'Watched tags are used by the subscription page': return '订阅标签会用于订阅页面';
     case 'Migration': return '迁移状态';
     case 'Open': return '打开';
+    case 'Delete history': return '删除历史';
+    case 'Remove favorite': return '移除收藏';
+    case 'Remove': return '移除';
+    case 'View': return '查看';
+    case 'Checked rows will be deleted. Tap a row to view the gallery.': return '勾选的条目将被删除；点条目可查看图册详情。';
     case 'Run': return '运行';
     case 'Scan': return '扫描';
+    case 'Rematch': return '重新匹配';
     case 'Link': return '链接';
     case 'Unavailable': return '暂不可用';
     case 'Available': return '可用';
@@ -2481,6 +2613,21 @@ export function zhText(text: string): string {
     case 'Rating needs an E-Hentai account. Sign in from the side drawer, then come back.':
       return '评分需要 E-Hentai 账号。请在左侧抽屉的「账号与登录」完成登录后再试。';
     case 'Got it': return '知道了';
+    case 'Stop': return '停止';
+    case 'Minimize': return '最小化';
+    case 'Scan already running': return '已有任务在进行中，请稍候';
+    case 'Done': return '完成';
+    case 'Rematch cloud': return '重新匹配云端';
+    case '✓ Downloaded': return '✓ 已下载';
+    case 'Duplicate check': return '查重';
+    case 'Dedupe': return '查重';
+    case 'Tap a row to switch keep/delete': return '点条目切换保留/删除';
+    case 'No duplicates found': return '没有发现重复图册';
+    case 'Keep': return '保留';
+    case 'Delete': return '删除';
+    case 'Delete marked': return '删除标记项';
+    case 'Close': return '关闭';
+    case 'Deduped: removed ': return '查重完成：已删除 ';
     case 'Sign in to rate': return '登录后才能评分';
     case 'Donate': return '捐赠';
     case 'Support the maintenance of this port': return '支持这个移植版的维护';
@@ -2930,7 +3077,8 @@ export function zhText(text: string): string {
     case 'Page preview': return '页面预览';
     case 'No local images found': return '没有找到本地图片';
     case 'Folder not found; it may have been moved or renamed': return '目录未找到，可能已被移动或改名';
-    case 'Remove this local gallery record and delete its files?': return '移除这条本地图册记录并删除它的文件？';
+    case 'Delete the list record only, or delete the local gallery with its files?': return '只删除列表记录，还是连同本地图册文件一起删除？';
+    case 'Remove record only': return '仅删除记录';
     case 'Removed 1 local gallery': return '已移除 1 个本地图册';
     default: return text;
   }

@@ -63,6 +63,8 @@ export struct GalleryDetailOverlayScene {
   @Prop renderVersion: number = 0;
   @Prop showInfo: boolean = false;
   @Prop showComments: boolean = false;
+  // 本地页路径（host 收集）：云端单张预览图加载失败时按页兜底（F-114）。
+  @Prop localPagePaths: string[] = [];
   @Prop commentDraft: string = '';
   @Prop commentPosting: boolean = false;
   @Prop commentPostStatus: string = '';
@@ -135,6 +137,7 @@ export struct GalleryDetailOverlayScene {
       GalleryDetailScene({
         renderVersion: this.renderVersion,
         detail: this.detail,
+        localPagePaths: this.localPagePaths,
         isDetailLoaded: this.isDetailLoaded,
         sectionsFailed: this.sectionsFailed,
         sectionsMessage: this.sectionsMessage,
@@ -231,6 +234,8 @@ export struct GalleryDetailOverlayScene {
 export struct GalleryDetailScene {
   @Prop renderVersion: number = 0;
   @Prop detail: GalleryDetail = createEmptyDetail();
+  // 本地页路径（host 收集）：云端单张预览图加载失败时按页兜底（F-114）。
+  @Prop localPagePaths: string[] = [];
   @Prop isDetailLoaded: boolean = false;
   @Prop sectionsFailed: boolean = false;
   @Prop sectionsMessage: string = '';
@@ -586,6 +591,7 @@ export struct GalleryDetailScene {
             ListItem() {
               DetailPreviews({
                 previews: this.detail.previewSet,
+                localPagePaths: this.localPagePaths,
                 previewPages: this.detail.previewPages,
                 totalPages: this.previewJumpTotalPages(),
                 isDetailLoaded: this.isDetailLoaded,
@@ -638,19 +644,14 @@ export struct GalleryDetailScene {
           this.startDetailPullRefresh();
         })
 
+        // 顶栏翻译开关已删除（F-110 用户决定）：标题被省略号截断看不到译文、
+        // 点击后长时间无结果，实际无使用价值。标签翻译（本地词条库）与
+        // 阅读器漫画翻译是独立功能，不受影响。
         EhSubNavBar({
           statusBarHeight: this.statusBarVp(),
           title: galleryDisplayTitle(this.detail),
-          translateTitle: this.translationEnabled,
-          showAction: this.translationButtonsVisible,
-          actionChecked: this.translationEnabled,
-          actionIcon: $r('sys.symbol.translate'),
           translateY: this.toolbarOffsetY,
-          onBack: this.onBack,
-          onAction: () => {
-            ehTranslationService.setEnabled(!this.translationEnabled);
-              showTranslationToggleFeedback(this.getUIContext(), !this.translationEnabled);
-          }
+          onBack: this.onBack
         })
       }
       .width('100%')

@@ -78,13 +78,17 @@ import {
   launchRouteFromSetting,
   runActiveBackHandler,
   uiStatusText,
-  uiText
+  uiText,
+  APP_TOAST_MESSAGE_KEY,
+  APP_TOAST_DURATION_KEY,
+  APP_TOAST_REVISION_KEY,
 } from '../shared/AppRuntime';
 import {
   themePageBackground,
   themePrimaryText,
   themeSecondaryText,
-  themeShadowColor
+  themeShadowColor,
+  isDarkTheme,
 } from '../shared/AppPalette';
 
 // ----------------------------------------------------------------
@@ -215,6 +219,29 @@ struct Index {
   // 被 back handler 消费、但路由没动的连续次数。第一次照常信任（多数情况是关了个弹层），
   // 连续第二次还这样就不再信，往下走根路由兜底，避免返回键一直空按。
   private backMissCount: number = 0;
+
+  // 应用内 toast：常驻全屏层会拦截触摸（F-109 复现实锤），
+  // 改为条件挂载——无提示时零节点，显示的 2.2 秒内才存在胶囊。
+  @StorageProp(APP_TOAST_MESSAGE_KEY) @Watch('onAppToastMessage') appToastMessage: string = '';
+  @StorageProp(APP_TOAST_REVISION_KEY) appToastRevision: number = 0;
+  @State appToastVisible: boolean = false;
+  @State appToastText: string = '';
+  private appToastHideTimer: number = -1;
+
+  onAppToastMessage(): void {
+    const message = this.appToastMessage;
+    if (message.length === 0) {
+      return;
+    }
+    this.appToastText = message;
+    this.appToastVisible = true;
+    if (this.appToastHideTimer !== -1) {
+      clearTimeout(this.appToastHideTimer);
+    }
+    this.appToastHideTimer = setTimeout(() => {
+      this.appToastVisible = false;
+    }, AppStorage.get<number>(APP_TOAST_DURATION_KEY) ?? 2200);
+  }
 
   onBackPress(): boolean {
     if (this.drawerVisible) {
@@ -838,9 +865,24 @@ struct Index {
         .zIndex(100)
       }
 
-      // 应用内 toast：反转主题色胶囊，不挡触摸（F-109）。
-      AppToastHost()
+      if (this.appToastVisible) {
+        Column() {
+          Text(this.appToastText)
+            .fontSize(14)
+            .fontColor(isDarkTheme() ? '#19191B' : '#FFFFFF')
+            .textAlign(TextAlign.Center)
+            .maxLines(2)
+            .padding({ left: 20, right: 20, top: 11, bottom: 11 })
+            .backgroundColor(isDarkTheme() ? '#F2F2F6' : '#26262A')
+            .borderRadius(22)
+            .opacity(0.96)
+            .shadow({ radius: 14, color: 'rgba(0,0,0,0.25)', offsetX: 0, offsetY: 3 })
+        }
+        .width('100%')
+        .alignItems(HorizontalAlign.Center)
+        .position({ y: '88%' })
         .zIndex(999)
+      }
     }
     .width('100%')
     .height('100%')

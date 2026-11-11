@@ -542,9 +542,12 @@ export struct EhNavBar {
   @Prop showBackButton: boolean = false;
   @Prop searchShowsAdvancedButton: boolean = false;
   @Prop showBackdrop: boolean = true;
+  // 下载页专属：云端匹配入口（点击触发 DownloadMatchService 全量重校验，F-115）。
+  @Prop showCloudMatchButton: boolean = false;
   // translate offset injected by parent for scroll-hide; 0 = visible, negative = hidden
   @Prop translateY: number = 0;
   onMenu: () => void = () => {};
+  onCloudMatch: () => void = () => {};
   onBack: () => void = () => {};
   onSearch: () => void = () => {};
   onSearchFocus: () => void = () => {};
@@ -772,6 +775,23 @@ export struct EhNavBar {
             .backgroundEffect(uiTransparentButtonBackgroundEffect())
             .systemMaterial(uiButtonMaterial())
             .onClick(() => { this.onBookmarkButton(); })
+          }
+
+          if (this.showCloudMatchButton) {
+            Button({ type: ButtonType.Circle, stateEffect: true }) {
+              SymbolGlyph($r('sys.symbol.arrow_clockwise'))
+                .fontSize(19)
+                .fontColor([navigationTitleText()])
+            }
+            .width(this.actionSize())
+            .height(this.actionSize())
+            .backgroundColor(uiMaterialBackground(navigationActionBackground(themeOnPrimaryActionBackground())))
+            .margin({ left: 6 })
+            .flexShrink(0)
+            .border({ width: 1, color: uiButtonHighlightBorderColor() })
+            .backgroundEffect(uiTransparentButtonBackgroundEffect())
+            .systemMaterial(uiButtonMaterial())
+            .onClick(() => { this.onCloudMatch(); })
           }
 
           if (this.showSearchButton) {

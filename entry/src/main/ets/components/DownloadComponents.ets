@@ -121,6 +121,7 @@ export struct DownloadStatusFilterOverlay {
   onApply: () => void = () => {};
   onClearFailed: () => void = () => {};
   onRetryFailed: () => void = () => {};
+  onRematchCloud: () => void = () => {};
 
   build() {
     Stack({ alignContent: Alignment.Center }) {
@@ -196,6 +197,19 @@ export struct DownloadStatusFilterOverlay {
                 this.onRetryFailed();
               })
 
+            Button(uiText('Rematch cloud'))
+              .height(40)
+              .layoutWeight(1)
+              .fontSize(14)
+              .fontColor(uiMaterialForegroundColor(themePrimaryText()))
+              .backgroundColor(uiMaterialBackground(themeFieldBackground()))
+              .borderRadius(uiRadius(8))
+              .backgroundEffect(uiTransparentButtonBackgroundEffect())
+              .systemMaterial(uiButtonMaterial())
+              .onClick(() => {
+                this.onRematchCloud();
+              })
+
             Button(uiText('Clear failed'))
               .height(40)
               .layoutWeight(1)
@@ -263,6 +277,8 @@ export struct DownloadToolColumn {
   onStart: () => void = () => {};
   onStop: () => void = () => {};
   onRestore: () => void = () => {};
+  onRematch: () => void = () => {};
+  onDedupe: () => void = () => {};
   onRandom: () => void = () => {};
   onTranslate: () => void = () => {};
   onSelectAll: () => void = () => {};
@@ -291,7 +307,7 @@ export struct DownloadToolColumn {
     if (this.hasSelection) {
       return this.showTranslationButton ? 9 : 8;
     }
-    return this.showTranslationButton ? 9 : 8;
+    return this.showTranslationButton ? 11 : 10;
   }
 
   private primaryIndex(): number {
@@ -337,9 +353,11 @@ export struct DownloadToolColumn {
     if (index === 3) return 'start';
     if (index === 4) return 'stop';
     if (index === 5) return 'scan';
-    if (index === 6 && this.showTranslationButton) return 'translate';
-    if (index === (this.showTranslationButton ? 7 : 6)) return 'random';
-    if (index === (this.showTranslationButton ? 8 : 7)) return 'sort';
+    if (index === 6) return 'rematch';
+    if (index === 7) return 'dedupe';
+    if (index === 8 && this.showTranslationButton) return 'translate';
+    if (index === (this.showTranslationButton ? 9 : 8)) return 'random';
+    if (index === (this.showTranslationButton ? 10 : 9)) return 'sort';
     return '';
   }
 
@@ -355,6 +373,8 @@ export struct DownloadToolColumn {
     if (kind === 'start') return this.hasSelection ? uiText('Start selected') : uiText('Start filtered');
     if (kind === 'stop') return this.hasSelection ? uiText('Stop selected') : uiText('Stop filtered');
     if (kind === 'scan') return uiText('Scan');
+    if (kind === 'rematch') return uiText('Rematch');
+    if (kind === 'dedupe') return uiText('Dedupe');
     if (kind === 'translate') {
       return this.translationEnabled ? uiText('Show original titles') : uiText('Translate titles');
     }
@@ -374,6 +394,8 @@ export struct DownloadToolColumn {
     if (kind === 'start') return $r('sys.symbol.play_fill');
     if (kind === 'stop') return $r('sys.symbol.pause_fill');
     if (kind === 'scan') return $r('sys.symbol.doc_text_badge_magnifyingglass');
+    if (kind === 'rematch') return $r('sys.symbol.arrow_clockwise');
+    if (kind === 'dedupe') return $r('sys.symbol.arrow_up_circle');
     if (kind === 'translate') return $r('sys.symbol.translate');
     if (kind === 'random') return $r('sys.symbol.shuffle');
     return $r('sys.symbol.more');
@@ -455,6 +477,10 @@ export struct DownloadToolColumn {
       this.onStop();
     } else if (kind === 'scan') {
       this.onRestore();
+    } else if (kind === 'rematch') {
+      this.onRematch();
+    } else if (kind === 'dedupe') {
+      this.onDedupe();
     } else if (kind === 'translate') {
       this.onTranslate();
     } else if (kind === 'random' && this.canRandom) {

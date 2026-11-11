@@ -86,6 +86,7 @@ import {
 } from '../shared/AppSurfaceStyle';
 import { GalleryDetailHostScene } from './GalleryDetailHostScene';
 import { PopupScrim } from './PopupScrim';
+import { ConfirmActionOverlay } from './ConfirmActionOverlay';
 import { BookmarkEditor } from './BookmarkEditor';
 import { ReaderSessionScene } from './ReaderHostScene';
 import {
@@ -312,6 +313,9 @@ export struct GalleryListScene {
   @State detailStatus: string = 'Tap a gallery row to load detail';
   @State detailRequestUrl: string = '';
   @State cardActionVisible: boolean = false;
+  // F-120：历史删除/收藏移除是高危不可逆操作，先出沉浸式确认弹窗（用户红线）。
+  @State cardDeleteConfirmKind: string = '';
+  @State cardDeleteConfirmGallery: GalleryInfo = createEmptyGallery();
   @State cardActionGallery: GalleryInfo = createEmptyGallery();
   @State downloadLabelDialogVisible: boolean = false;
   @State downloadLabelOptions: DownloadLabel[] = [];
@@ -1286,6 +1290,17 @@ export struct GalleryListScene {
     const primarySite = effectiveListSite(this.sourceRoute);
     const candidates = this.sourceRoute === GalleryRoute.Favorites ? gallerySiteCandidates(primarySite) :
       [primarySite];
+    if (this.sourceRoute === GalleryRoute.Favorites && candidates.length > 1) {
+      // F-123：收藏列表双站**并行竞速**——原串行 fallback 在网络差时最坏
+      // 15s+30s 超时 ×2 = 90 秒转圈（用户反馈「收藏栏转圈过长」）。
+      // 两站同时发，谁先成功用谁；都成功取主站；都失败抛最后一个错误。
+      const outcome = await this.raceFavoriteSites(candidates, pageIndex);
+      if (outcome !== null && outcome.result !== null) {
+        this.activeSite = outcome.site;
+        return outcome.result;
+      }
+      throw new Error('Favorites list failed');
+    }
     let result = await this.loadRoutePage(pageIndex, primarySite);
     this.activeSite = primarySite;
     if (!result.ok && candidates.length > 1) {
@@ -1300,6 +1315,43 @@ export struct GalleryListScene {
       return this.mergeLocalFavoritesIntoAllFavorites(result, searchKeywordForRequest(this.keyword), pageIndex);
     }
     return result;
+  }
+
+  // F-123：收藏双站并行竞速。两站同时发请求；先成功者胜（都成功取主站）；
+  // 都失败抛最后的错误。最坏等待从串行 fallback 的 ~90s 降到单站超时。
+  private async raceFavoriteSites(candidates: GallerySite[],
+    pageIndex: number): Promise<FavoriteSiteRaceOutcome | null> {
+    const outcomes: FavoriteSiteRaceOutcome[] = [];
+    for (let i = 0; i < candidates.length; i++) {
+      const outcome = new FavoriteSiteRaceOutcome();
+      outcome.site = candidates[i];
+      outcomes.push(outcome);
+    }
+    const tasks: Promise<void>[] = [];
+    for (let i = 0; i < candidates.length; i++) {
+      const index = i;
+      const site = candidates[index];
+      tasks.push(this.loadRoutePage(pageIndex, site).then((result: GalleryListLoadResult) => {
+        outcomes[index].result = result;
+      }).catch((error: Error) => {
+        outcomes[index].error = error;
+      }));
+    }
+    await Promise.all(tasks);
+    let lastError: Error | null = null;
+    for (let i = 0; i < outcomes.length; i++) {
+      const outcome = outcomes[i];
+      if (outcome.result !== null && outcome.result.ok) {
+        return outcome;
+      }
+      if (outcome.error !== null) {
+        lastError = outcome.error;
+      } else if (outcome.result !== null) {
+        lastError = new Error(outcome.result.message.length > 0 ?
+          outcome.result.message : 'Favorites list failed');
+      }
+    }
+    throw lastError ?? new Error('Favorites list failed');
   }
 
   private visibleRemoteGalleries(galleries: GalleryInfo[]): GalleryInfo[] {
@@ -2380,8 +2432,13 @@ export struct GalleryListScene {
   }
 
   private deleteHistoryGallery(gallery: GalleryInfo): void {
-    const context = getAbilityContext();
+    this.cardDeleteConfirmKind = 'history';
+    this.cardDeleteConfirmGallery = gallery;
     this.closeCardActions();
+  }
+
+  private performDeleteHistory(gallery: GalleryInfo): void {
+    const context = getAbilityContext();
     if (gallery.gid <= 0) {
       return;
     }
@@ -2406,8 +2463,13 @@ export struct GalleryListScene {
   }
 
   private removeFavoriteGallery(gallery: GalleryInfo): void {
-    const context = getAbilityContext();
+    this.cardDeleteConfirmKind = 'favorite';
+    this.cardDeleteConfirmGallery = gallery;
     this.closeCardActions();
+  }
+
+  private performRemoveFavorite(gallery: GalleryInfo): void {
+    const context = getAbilityContext();
     if (this.sourceRoute !== GalleryRoute.Favorites || gallery.gid <= 0 || gallery.token.length === 0) {
       return;
     }
@@ -2977,6 +3039,9 @@ export struct GalleryListScene {
               onDetailLoaded: (detail: GalleryDetail) => {
                 this.detail = detail;
                 this.updateVisibleLocalFavorite(detail);
+                // 主页详情联网成功也要回写下载记录：否则列表的上传者/评分/分类
+                // 永远停在导入时的旧值，与详情页割裂。
+                ehDownloadStore.updateGallery(detail);
               },
               onDetailScrollUpdate: (offset: number) => {
                 this.detailScrollOffset = offset;
@@ -3025,6 +3090,32 @@ export struct GalleryListScene {
               .transition(TransitionEffect.OPACITY.animation({ duration: 180, curve: Curve.EaseInOut }))
           }
 
+          if (this.cardDeleteConfirmKind.length > 0) {
+            ConfirmActionOverlay({
+              title: this.cardDeleteConfirmKind === 'history' ? 'Delete history' : 'Remove favorite',
+              message: this.cardDeleteConfirmKind === 'history' ?
+                'This gallery will be removed from history. Downloads are not affected.' :
+                'This gallery will be removed from favorites.',
+              confirmLabel: this.cardDeleteConfirmKind === 'history' ? 'Delete' : 'Remove',
+              danger: true,
+              onCancel: () => {
+                this.cardDeleteConfirmKind = '';
+              },
+              onConfirm: () => {
+                const kind = this.cardDeleteConfirmKind;
+                const gallery = this.cardDeleteConfirmGallery;
+                this.cardDeleteConfirmKind = '';
+                if (kind === 'history') {
+                  this.performDeleteHistory(gallery);
+                } else {
+                  this.performRemoveFavorite(gallery);
+                }
+              }
+            })
+              .zIndex(32)
+              .transition(TransitionEffect.OPACITY.animation({ duration: 160, curve: Curve.EaseInOut }))
+          }
+
           if (this.downloadLabelDialogVisible) {
             DownloadLabelSelectionDialog({
               title: 'Download labels',
@@ -3068,3 +3159,12 @@ export struct GalleryListScene {
       })
   }
 }
+
+// 收藏双站并行竞速的结果封装（ArkTS 禁止无类型对象字面量，显式类承载）。
+class FavoriteSiteRaceOutcome {
+  site: GallerySite = GallerySite.E;
+  result: GalleryListLoadResult | null = null;
+  error: Error | null = null;
+}
+
+

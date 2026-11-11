@@ -62,7 +62,9 @@ interface OcrTextGroup {
 }
 
 const MAX_OCR_IMAGE_EDGE: number = 4096;
-const MAX_CONCURRENT_OCR_TASKS: number = 1;
+// F-120 用户反馈「点了翻译没反应/翻几页才轮到」：串行 OCR 一页 2-5 秒，
+// 连续翻页后第 3 页要等 10 秒以上才开始。并发 2 在设备 ML 内存预算内。
+const MAX_CONCURRENT_OCR_TASKS: number = 2;
 // OCR 引擎初始化在部分设备上会长时间不返回，卡住时页面既不报错也不出译文，
 // 这里设上限，超时直接给用户明确原因。
 const OCR_INIT_TIMEOUT_MS: number = 12000;
@@ -302,24 +304,37 @@ export class ReaderComicTranslationService {
         try {
           line.translatedText = await ehTranslationService.translate(translationSource, contentKind, task.priority,
             true, true, task.force, task.cancellationToken);
-        } catch (error) {
-          const message = error instanceof Error ? error.message : String(error);
-          if (message.toLowerCase().indexOf('cancel') >= 0) {
-            throw error instanceof Error ? error : new Error(message);
+        } catch (firstError) {
+          const firstMessage = firstError instanceof Error ? firstError.message : String(firstError);
+          if (firstMessage.toLowerCase().indexOf('cancel') >= 0) {
+            throw firstError instanceof Error ? firstError : new Error(firstMessage);
           }
-          // 单行失败只降级该行，其余行照常显示译文，整页不因此失败。
-          if (translationFailure.length === 0) {
-            translationFailure = message;
+          // F-120：单行失败先重试一次（Web 源限流类失败重试常能成功），
+          // 再失败才降级该行。重试走 translate 内部的 pending 去重，不会重复发请求。
+          try {
+            line.translatedText = await ehTranslationService.translate(translationSource, contentKind,
+              task.priority, true, true, true, task.cancellationToken);
+          } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            if (message.toLowerCase().indexOf('cancel') >= 0) {
+              throw error instanceof Error ? error : new Error(message);
+            }
+            // 单行失败只降级该行，其余行照常显示译文，整页不因此失败。
+            if (translationFailure.length === 0) {
+              translationFailure = firstMessage;
+            }
+            debug.push('[单行翻译失败] ' + JSON.stringify(line.sourceText) + ' -> ' + message);
+            line.translatedText = '';
           }
-          debug.push('[单行翻译失败] ' + JSON.stringify(line.sourceText) + ' -> ' + message);
-          line.translatedText = '';
         }
       }));
       this.ensureTaskActive(task);
       const translatedLines: ReaderTranslationLine[] =
         lines.filter((line: ReaderTranslationLine) => line.translatedText.length > 0);
-      if (lines.length > 0 && translatedLines.length === 0) {
-        // 全行失败说明翻译通道不可用，此时必须暴露原因，不能伪装成「没有识别到文字」。
+      // F-120：全行失败或失败过半都视为翻译通道不可用——静默渲染半页译文
+      // 会被用户当成「翻译失效了」，必须暴露原因让用户重试或换源。
+      const failedRatio = lines.length > 0 ? (lines.length - translatedLines.length) / lines.length : 0;
+      if (lines.length > 0 && (translatedLines.length === 0 || failedRatio > 0.5)) {
         throw new Error(translationFailure.length > 0 ? translationFailure : 'Comic translation failed');
       }
       debug.push('[最终翻译]');

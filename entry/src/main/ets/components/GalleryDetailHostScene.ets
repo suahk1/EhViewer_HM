@@ -429,6 +429,56 @@ export struct GalleryDetailHostScene {
     this.unregisterDetailBackHandler();
   }
 
+  // 详情页底部预览的本地兜底（F-114）：只在确认云端预览拿不到时使用。
+  // localPreviewPaths 供「云端预览图单张加载失败」时按页兜底；
+  // 云端 previewSet 有效时列表照常显示云端预览，绝不覆盖。
+  @State localPreviewPaths: string[] = [];
+
+  private collectLocalPreviewPaths(): string[] {
+    const context = getAbilityContext();
+    if (context === undefined || this.detail.gid <= 0) {
+      return [];
+    }
+    const item = ehDownloadStore.getItemByGid(this.detail.gid);
+    if (item === undefined || item.archiveUri.length === 0) {
+      return [];
+    }
+    let directory = item.archiveUri;
+    if (ehDownloadFileStore.listLocalPageImages(directory).length <= 0) {
+      directory = ehDownloadFileStore.downloadedGalleryDirectory(context, item);
+      if (directory.length === 0 || ehDownloadFileStore.listLocalPageImages(directory).length <= 0) {
+        return [];
+      }
+    }
+    return ehDownloadFileStore.listLocalPageImages(directory);
+  }
+
+  // 云端预览确认拿不到（详情失败/超时/previewSet 空）时，本地页整区兜底。
+  private applyLocalPreviewFallback(): void {
+    const paths = this.collectLocalPreviewPaths();
+    this.localPreviewPaths = paths;
+    if (paths.length === 0 || this.detail.previewSet.length > 0) {
+      // 云端 previewSet 有效：保持云端预览，只留按页兜底路径。
+      return;
+    }
+    const previews: GalleryPreview[] = [];
+    for (let i = 0; i < paths.length; i++) {
+      previews.push({
+        index: i + 1,
+        pageUrl: '',
+        imageUrl: paths[i],
+        width: 0,
+        height: 0,
+        xOffset: 0,
+        yOffset: 0
+      });
+    }
+    this.detail.previewSet = previews;
+    this.visiblePreviews = cloneGalleryPreviews(previews);
+    this.previewPageSize = seedPreviewMap(this.previewMap, previews, this.previewPageSize);
+    this.renderVersion++;
+  }
+
   private clearSectionsTimeout(): void {
     if (this.sectionsTimeoutTimer >= 0) {
       clearTimeout(this.sectionsTimeoutTimer);
@@ -440,7 +490,7 @@ export struct GalleryDetailHostScene {
     this.clearSectionsTimeout();
     this.sectionsFailed = false;
     this.sectionsMessage = '';
-    this.sectionsTimeoutTimer = setTimeout(() => {
+      this.sectionsTimeoutTimer = setTimeout(() => {
       this.sectionsTimeoutTimer = -1;
       if (!this.detailRequestGate.isCurrent(generation) || this.detailLoaded) {
         return;
@@ -448,6 +498,8 @@ export struct GalleryDetailHostScene {
       this.sectionsFailed = true;
       this.sectionsMessage = 'Still loading, tap to retry';
       this.detailStatus = 'Detail request timed out';
+      // 请求超时同样给本地预览兜底，别让预览区一直空转。
+      this.applyLocalPreviewFallback();
       this.renderVersion++;
     }, DETAIL_SECTION_TIMEOUT_MS);
   }
@@ -621,6 +673,12 @@ export struct GalleryDetailHostScene {
       this.detailStatus = result.statusText;
       this.detailLoaded = true;
       this.previewPageSize = seedPreviewMap(this.previewMap, this.detail.previewSet, this.previewPageSize);
+      // 先收集本地页路径（单张云端预览图加载失败时按页兜底）；
+      // 云端 previewSet 为空才用本地页整区兜底，云端有数据必须正常显示云端预览。
+      this.localPreviewPaths = this.collectLocalPreviewPaths();
+      if (this.detail.previewSet.length === 0) {
+        this.applyLocalPreviewFallback();
+      }
       this.optimisticFavorite = this.detail.isFavorited;
       this.syncLocalFavoriteState(true);
       refreshDetailDownloadItem(this.detail);
@@ -636,6 +694,8 @@ export struct GalleryDetailHostScene {
         this.detail.gid === requestGid) {
         this.detailStatus = 'Detail load failed: ' + error.message;
         this.markSectionsFailed('Detail load failed: ' + error.message);
+        // 云端详情确认失败：本地页整区兜底，能阅读就说明本地页齐全。
+        this.applyLocalPreviewFallback();
         this.renderVersion++;
       }
       if (done !== undefined) {
@@ -1991,6 +2051,7 @@ export struct GalleryDetailHostScene {
         renderVersion: this.renderVersion,
         showInfo: this.showInfo,
         showComments: this.showComments,
+        localPagePaths: this.localPreviewPaths,
         commentDraft: this.commentDraft,
         commentPosting: this.commentPosting,
         commentPostStatus: this.commentPostStatus,

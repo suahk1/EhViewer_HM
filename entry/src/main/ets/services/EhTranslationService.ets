@@ -294,11 +294,9 @@ export class EhTranslationService {
   private translationBatchSequence: number = 0;
 
   setEnabled(enabled: boolean): void {
-    const wasEnabled = AppStorage.get<boolean>(TRANSLATION_ENABLED_KEY) === true;
-    if (enabled && !wasEnabled) {
-      translationSessionRevision++;
-      this.clearCache();
-    }
+    // F-120：开启翻译不再清缓存。缓存 key 已含翻译源/目标语言/内容类型/原文，
+    // 配置变化自然 miss；重新开启时已翻译内容秒显（联网阅读类 APP，
+    // 1 分钟前的结果重开还要重新加载是体验灾难——用户 2026-11-13 定）。
     AppStorage.setOrCreate<boolean>(TRANSLATION_ENABLED_KEY, enabled);
     if (!enabled) {
       translationSessionRevision++;
@@ -1393,8 +1391,8 @@ export function activeTranslationProvider(): string {
     // 翻译已开启但密钥未配置时必须回落到机器翻译：
     // 否则每一次翻译（标题、评论、漫画）都会直接抛「缺少 API Key」，用户只看到失败。
   }
-  const provider = appSettingsStore.getValue('translation_machine_provider', 'Google Web');
-  return providerUsesServiceTranslation(provider) ? 'Google Web' : provider;
+  const provider = appSettingsStore.getValue('translation_machine_provider', 'Bing Web');
+  return providerUsesServiceTranslation(provider) ? 'Bing Web' : provider;
 }
 
 function providerUsesServiceTranslation(provider: string): boolean {

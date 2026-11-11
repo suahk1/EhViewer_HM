@@ -52,6 +52,9 @@ export struct GalleryHomeNavBarHost {
   };
   onFavoriteButton: () => void = () => {
   };
+  showCloudMatchButton: boolean = false;
+  onCloudMatch: () => void = () => {
+  };
   onBookmarkButton: () => void = () => {
   };
   onKeywordChange: (value: string) => void = (_value: string) => {
@@ -71,6 +74,7 @@ export struct GalleryHomeNavBarHost {
       showSearchButton: this.showSearchButton,
       showFavoriteButton: this.showFavoriteButton,
       showBookmarkButton: this.showBookmarkButton,
+      showCloudMatchButton: this.showCloudMatchButton,
       showRefreshButton: false,
       showBackButton: this.showBackButton,
       searchShowsAdvancedButton: this.searchShowsAdvancedButton,
@@ -92,6 +96,9 @@ export struct GalleryHomeNavBarHost {
       },
       onFavoriteButton: () => {
         this.onFavoriteButton();
+      },
+      onCloudMatch: () => {
+        this.onCloudMatch();
       },
       onBookmarkButton: () => {
         this.onBookmarkButton();

@@ -78,8 +78,8 @@ export function defaultSettingEntries(): SettingEntry[] {
     { key: 'reader_ocr_debug_log', value: 'Off' },
     { key: 'reader_translation_button_side', value: 'Right' },
     { key: 'reader_translation_button_y_ratio', value: '0.35' },
-    { key: 'translation_provider', value: 'Google Web' },
-    { key: 'translation_machine_provider', value: 'Google Web' },
+    { key: 'translation_provider', value: 'Bing Web' },
+    { key: 'translation_machine_provider', value: 'Bing Web' },
     { key: 'translation_batch_enabled', value: 'On' },
     { key: 'translation_ai_enabled', value: 'Off' },
     { key: 'translation_ai_provider', value: 'DeepSeek' },
@@ -570,7 +570,7 @@ export class AppSettingsStore {
       this.setValue('translation_ai_provider', provider);
     } else {
       this.setValue('translation_ai_enabled', 'Off');
-      this.setValue('translation_machine_provider', isMachineTranslationProvider(provider) ? provider : 'Google Web');
+      this.setValue('translation_machine_provider', isMachineTranslationProvider(provider) ? provider : 'Bing Web');
     }
     this.setValue('translation_provider_split_20260714', 'Applied');
   }

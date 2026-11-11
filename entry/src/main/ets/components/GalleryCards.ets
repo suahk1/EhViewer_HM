@@ -2,6 +2,8 @@ import { image } from '@kit.ImageKit';
 import { GalleryCategory, GalleryInfo, GallerySite } from '../model/GalleryModels';
 import { DecodedGalleryThumbnail, GalleryThumbnailLease } from '../services/GalleryThumbnailDecodeCache';
 import { ehHistoryStore } from '../services/EhHistoryStore';
+import { ehDownloadStore } from '../services/EhDownloadStore';
+import { themePrimaryColor } from '../shared/AppPalette';
 import { GALLERY_STATUS_REVISION_KEY, galleryStatusStore } from '../services/GalleryStatusStore';
 import { remoteStorageDownloadDeletionService } from '../services/RemoteStorageDownloadDeletionService';
 import { ehTagTranslationStore } from '../services/EhTagTranslationStore';
@@ -160,6 +162,8 @@ export struct GalleryListRow {
     this.localOnly = params.localOnly === true;
     this.cloudOnly = params.cloudOnly === true;
     this.cloudGone = params.cloudGone === true;
+    // 已下载标记（F-116）：主页/收藏等列表也能看出这本已下载，不用点进详情才知道。
+    this.downloadedBadge = ehDownloadStore.contains(this.gallery.gid);
     const progress = params.progressLabel;
     if (progress !== undefined) {
       this.progressLabel = progress as string;
@@ -174,6 +178,8 @@ export struct GalleryListRow {
   @Prop cloudGone: boolean = false;
   // 下载列表用它把“阅读进度”换成“下载进度/已下载”。
   @Prop progressLabel: string = '';
+  // 已下载徽章：非下载列表的卡片上显示（F-116）。
+  @State downloadedBadge: boolean = false;
   onLongPress: (gallery: GalleryInfo) => void = (_gallery: GalleryInfo) => {
   };
   onOpenReader: (gallery: GalleryInfo) => void = (_gallery: GalleryInfo) => {
@@ -421,6 +427,15 @@ export struct GalleryListRow {
           .fontColor(themeSecondaryText())
           .maxLines(1)
           .flexShrink(0)
+        if (this.downloadedBadge) {
+          // F-120 用户要求：联网列表（主页/热门等）里已下载的图册在语言/页数旁打 √。
+          Text(uiText('✓'))
+            .fontSize(this.metaFontSize())
+            .fontWeight(FontWeight.Bold)
+            .fontColor(themePrimaryColor())
+            .maxLines(1)
+            .flexShrink(0)
+        }
         if (this.showReadPageText()) {
           Text(this.readPageText())
             .fontSize(this.metaFontSize())
@@ -440,6 +455,13 @@ export struct GalleryListRow {
           heightValue: this.categoryHeight() - 2,
           horizontalPadding: this.isLooseLayout() ? 9 : 7
         })
+        if (this.downloadedBadge) {
+          Text(uiText('✓ Downloaded'))
+            .fontSize(this.metaFontSize() - 1)
+            .fontColor(themePrimaryColor())
+            .maxLines(1)
+            .flexShrink(0)
+        }
         Blank()
         Text(this.gallery.posted === undefined ? '' : this.gallery.posted)
           .fontSize(this.metaFontSize() - 1)
@@ -859,6 +881,8 @@ export struct GalleryThumb {
 @Reusable
 export struct GalleryThumbCard {
   @Prop @Watch('onGalleryChange') gallery: GalleryInfo = createEmptyGallery();
+  // 已下载徽章（F-116）：主页/收藏等列表的缩略卡片同样显示。
+  @State downloadedBadge: boolean = false;
 
   // 同 GalleryListRow：复用后必须换数据并重算宽高比，否则缩略图会串到下一条。
   aboutToReuse(params: Record<string, Object>): void {
@@ -888,6 +912,8 @@ export struct GalleryThumbCard {
     this.localOnly = params.localOnly === true;
     this.cloudOnly = params.cloudOnly === true;
     this.cloudGone = params.cloudGone === true;
+    // 已下载标记（F-116）：主页/收藏等列表也能看出这本已下载，不用点进详情才知道。
+    this.downloadedBadge = ehDownloadStore.contains(this.gallery.gid);
     this.syncThumbnailAspectRatio();
   }
   @Prop selected: boolean = false;

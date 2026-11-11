@@ -1253,13 +1253,10 @@ export struct QuickActionColumn {
   }
 
   private touchY(event: TouchEvent): number {
-    if (event.touches.length > 0) {
-      return event.touches[0].y;
-    }
-    if (event.changedTouches.length > 0) {
-      return event.changedTouches[0].y;
-    }
-    return -1;
+    // 全局 y → toolbar 本地 y（hitActionIndex 期望本地坐标，F-124）。
+    const raw = event.touches.length > 0 ? event.touches[0].y :
+      (event.changedTouches.length > 0 ? event.changedTouches[0].y : -1);
+    return raw < 0 ? raw : raw - this.toolbarGlobalTop;
   }
 
   private updateActiveAction(event: TouchEvent): void {
@@ -1295,6 +1292,10 @@ export struct QuickActionColumn {
       this.onRandom();
     }
   }
+
+  // F-124：hitActionIndex 期望 toolbar 本地坐标，而 onTouch 给的是全局坐标——
+  // 面板展开越高错位越大，动作按钮点击全部失效（用户反馈「点了没作用」）。
+  @State private toolbarGlobalTop: number = 0;
 
   private handleToolbarTouch(event: TouchEvent): void {
     if (event.type === TouchType.Down) {
@@ -1422,6 +1423,13 @@ export struct QuickActionColumn {
     // 统一居中，左右两侧都以一级按钮为轴。
     .alignItems(HorizontalAlign.Center)
     .hitTestBehavior(HitTestMode.BLOCK_HIERARCHY)
+    .onAreaChange((_oldArea: Area, newArea: Area) => {
+      const globalY = newArea.globalPosition?.y === undefined ? Number.NaN :
+        Number.parseFloat(newArea.globalPosition.y.toString());
+      if (Number.isFinite(globalY)) {
+        this.toolbarGlobalTop = globalY;
+      }
+    })
     .onTouch((event: TouchEvent) => {
       this.handleToolbarTouch(event);
     })
@@ -1430,6 +1438,7 @@ export struct QuickActionColumn {
 
 @Component
 export struct SearchActionColumn {
+  @State private toolbarGlobalTop: number = 0;
   @Prop showTranslationButton: boolean = false;
   @Prop translationEnabled: boolean = false;
   @Prop side: string = FLOATING_ACTION_SIDE_RIGHT;
@@ -1470,13 +1479,10 @@ export struct SearchActionColumn {
   }
 
   private touchY(event: TouchEvent): number {
-    if (event.touches.length > 0) {
-      return event.touches[0].y;
-    }
-    if (event.changedTouches.length > 0) {
-      return event.changedTouches[0].y;
-    }
-    return -1;
+    // 全局 y → toolbar 本地 y（hitActionIndex 期望本地坐标，F-124）。
+    const raw = event.touches.length > 0 ? event.touches[0].y :
+      (event.changedTouches.length > 0 ? event.changedTouches[0].y : -1);
+    return raw < 0 ? raw : raw - this.toolbarGlobalTop;
   }
 
   private hitActionIndex(x: number, y: number): number {
@@ -1632,8 +1638,10 @@ export struct ActionBubble {
     Stack({ alignContent: Alignment.Center }) {
       SymbolGlyph(this.symbolIcon)
         .fontSize(this.primary ? 26 : 20)
+        // checked 态在玻璃透明底上不能用 onPrimary 白：浅色模式下整颗按钮全白
+        // （F-118 用户实测）。改用主题色，浅色/深色玻璃上都醒目。
         .fontColor([this.isEnabled ?
-          (this.checked ? themeSelectedButtonTextColor() : floatingActionForeground()) : themeInactiveActionText()])
+          (this.checked ? themePrimaryColor() : floatingActionForeground()) : themeInactiveActionText()])
 
       if (this.glowOpacity > 0.01) {
         Column()
@@ -1677,7 +1685,7 @@ export struct ActionBubble {
     // 边和底栏用同一条切面高光：玻璃本身在白底上没有对比，
     // 全靠这条 1px 的亮/暗边勾出轮廓，底栏也是这么立住的。
     .border(this.checked
-      ? { width: 2, color: themeOnPrimaryText() }
+      ? { width: 2, color: themePrimaryColor() }
       : uiDockHighlightBorder())
     // 玻璃底色透明后，浅色界面压在白卡片上只剩一圈细边，加一层随主题明暗切换的投影找轮廓：
     // 浅色用淡灰投影，深色用重投影 + 边框高光。

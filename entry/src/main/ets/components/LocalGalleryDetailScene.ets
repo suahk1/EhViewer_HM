@@ -35,7 +35,8 @@ import { SidePanelManagerHeader } from './SidePanelComponents';
 import { appDockBottomInset } from './FloatingDock';
 
 // 详情页最多铺这么多页预览，长图册不会因为一次性解码上百张小图卡住。
-const PREVIEW_THUMB_LIMIT: number = 12;
+// F-120 用户要求：本地图册预览显示全部页面，不做 12 张截断。
+// 页图是沙箱内文件路径，Image 组件直接加载磁盘文件，全量挂载可接受。
 
 interface LocalInfoRow {
   label: string;
@@ -138,7 +139,7 @@ export struct LocalGalleryDetailScene {
     }
     const paths = ehDownloadFileStore.listLocalPageImages(directory);
     this.pageCount = paths.length;
-    this.previewPaths = paths.slice(0, PREVIEW_THUMB_LIMIT);
+    this.previewPaths = paths;
     this.totalBytes = ehDownloadFileStore.directorySizeByPath(directory);
     this.formatLabel = localFormatLabel(paths);
     this.readIndex = ehHistoryStore.getReadPage(this.item.gid);
@@ -369,22 +370,8 @@ export struct LocalGalleryDetailScene {
         this.onRead(this.readIndex > 0 ? this.readIndex : 0);
       })
 
+      // 「Start reading」与主按钮重复（F-114 追加），删掉；目录路径与删除并排。
       Row({ space: 10 }) {
-        Button({ type: ButtonType.Capsule, stateEffect: true }) {
-          Text(uiText('Start reading'))
-            .fontSize(13)
-            .fontColor(themePrimaryText())
-        }
-        .layoutWeight(1)
-        .height(40)
-        .backgroundColor(uiMaterialBackground(themeFieldBackground()))
-        .backgroundEffect(uiTransparentButtonBackgroundEffect())
-        .systemMaterial(uiButtonMaterial())
-        .enabled(this.pageCount > 0)
-        .onClick(() => {
-          this.onRead(0);
-        })
-
         Button({ type: ButtonType.Capsule, stateEffect: true }) {
           Text(this.copied ? uiText('Copied') : uiText('Copy path'))
             .fontSize(13)
@@ -398,29 +385,55 @@ export struct LocalGalleryDetailScene {
         .onClick(() => {
           this.copyDirectory();
         })
-      }
-      .width('100%')
 
-      Button({ type: ButtonType.Capsule, stateEffect: true }) {
-        Row({ space: 6 }) {
-          SymbolGlyph($r('sys.symbol.trash'))
-            .fontSize(15)
-            .fontColor([themeSecondaryText()])
-          Text(uiText('Remove'))
-            .fontSize(13)
-            .fontColor(themeSecondaryText())
+        Button({ type: ButtonType.Capsule, stateEffect: true }) {
+          Row({ space: 6 }) {
+            SymbolGlyph($r('sys.symbol.trash'))
+              .fontSize(15)
+              .fontColor([themeSecondaryText()])
+            Text(uiText('Remove'))
+              .fontSize(13)
+              .fontColor(themeSecondaryText())
+          }
         }
+        .layoutWeight(1)
+        .height(40)
+        .backgroundColor(uiMaterialBackground(themeFieldBackground()))
+        .backgroundEffect(uiTransparentButtonBackgroundEffect())
+        .systemMaterial(uiButtonMaterial())
+        .onClick(() => {
+          this.onRemove();
+        })
       }
       .width('100%')
-      .height(40)
-      .backgroundColor(uiMaterialBackground(themeFieldBackground()))
-      .backgroundEffect(uiTransparentButtonBackgroundEffect())
-      .systemMaterial(uiButtonMaterial())
-      .onClick(() => {
-        this.onRemove();
-      })
     }
     .width('100%')
+  }
+
+  // 预览列数与云端详情页同一套公式（preferred 132vp 一列）：手机上一排约 3 个，
+  // 宽屏自适应更多（F-114 追加：本地预览跟随云端，不再固定 78vp 挤成一小排）。
+  @State previewContentWidth: number = 0;
+
+  private previewColumns(): number {
+    const available = Math.max(0, this.previewContentWidth);
+    if (available <= 0 || Number.isNaN(available)) {
+      return 3;
+    }
+    return Math.max(1, Math.floor(available / 132));
+  }
+
+  private previewTileWidth(): number {
+    const available = Math.max(0, this.previewContentWidth);
+    const columns = this.previewColumns();
+    const gap = 8;
+    if (available <= 0 || columns <= 0 || Number.isNaN(available)) {
+      return 132;
+    }
+    return Math.max(112, Math.floor((available - gap * (columns - 1)) / columns));
+  }
+
+  private previewTileHeight(): number {
+    return Math.round(this.previewTileWidth() * 4 / 3);
   }
 
   @Builder
@@ -465,8 +478,8 @@ export struct LocalGalleryDetailScene {
             Column({ space: 4 }) {
               GalleryThumb({
                 url: path,
-                widthValue: 78,
-                heightValue: 104,
+                widthValue: this.previewTileWidth(),
+                heightValue: this.previewTileHeight(),
                 radiusValue: uiRadius(6)
               })
               Text((index + 1).toString())
@@ -481,6 +494,9 @@ export struct LocalGalleryDetailScene {
         }
         .width('100%')
         .padding({ top: 2, bottom: 2 })
+        .onAreaChange((_oldArea: Area, newArea: Area) => {
+          this.previewContentWidth = Number.parseFloat(newArea.width.toString());
+        })
       }
     }
     .width('100%')

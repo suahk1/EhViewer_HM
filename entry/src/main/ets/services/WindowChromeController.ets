@@ -427,6 +427,17 @@ async function setWindowKeepScreenOnQuietly(target: window.Window, keepScreenOn:
   }
 }
 
+// 云端匹配等长时间任务期间的强制亮屏（F-115）：息屏会中断用户对进度的观察，
+// 也可能触发系统对后台任务的进一步限流。完成后必须调 false 恢复。
+export async function setMainWindowKeepScreenOn(keepScreenOn: boolean): Promise<void> {
+  const target = getMainWindow();
+  if (target === undefined) {
+    return;
+  }
+  await setWindowKeepScreenOnQuietly(target, keepScreenOn,
+    keepScreenOn ? 'keep screen on for long task' : 'restore keep screen on after long task');
+}
+
 async function setWindowBrightnessQuietly(target: window.Window, brightness: number,
   operation: string): Promise<void> {
   try {

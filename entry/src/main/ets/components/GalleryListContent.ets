@@ -1901,8 +1901,9 @@ export struct GalleryListContent {
               this.onSearch();
             },
             onTranslate: () => {
-              ehTranslationService.setEnabled(!this.translationEnabled);
-              showTranslationToggleFeedback(this.getUIContext(), !this.translationEnabled);
+              const nextTranslation = !this.translationEnabled;
+              ehTranslationService.setEnabled(nextTranslation);
+              showTranslationToggleFeedback(this.getUIContext(), nextTranslation);
             },
             onSideChange: (side: string) => {
               this.floatingActionSideController.handleManualSide(side);
@@ -1928,8 +1929,9 @@ export struct GalleryListContent {
             },
             onRefresh: this.onRefresh,
             onTranslate: () => {
-              ehTranslationService.setEnabled(!this.translationEnabled);
-              showTranslationToggleFeedback(this.getUIContext(), !this.translationEnabled);
+              const nextTranslation = !this.translationEnabled;
+              ehTranslationService.setEnabled(nextTranslation);
+              showTranslationToggleFeedback(this.getUIContext(), nextTranslation);
             },
             onRandom: this.onRandom,
             onImageSearch: () => {

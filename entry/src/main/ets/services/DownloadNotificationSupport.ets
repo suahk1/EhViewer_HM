@@ -56,7 +56,6 @@ async function createOpenDownloadDirectoryAgent(directory: string, requestCode: 
   const info: wantAgent.WantAgentInfo = {
     wants: [
       {
-        bundleName: 'yt.ehviewer.huawei',
         moduleName: 'entry',
         abilityName: 'EntryAbility',
         parameters: parameters

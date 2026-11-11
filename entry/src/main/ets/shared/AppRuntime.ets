@@ -267,9 +267,12 @@ export function setActiveBackHandler(handler: (() => boolean) | null): void {
 // 自绘胶囊颜色反转于页面背景（深色页配浅胶囊、浅色页配深胶囊），双主题都清晰（F-109）。
 export const APP_TOAST_MESSAGE_KEY: string = 'appToastMessage';
 export const APP_TOAST_REVISION_KEY: string = 'appToastRevision';
+export const APP_TOAST_DURATION_KEY: string = 'appToastDuration';
 
-export function showRaisedToast(uiContext: UIContext, message: string): void {
+export function showRaisedToast(uiContext: UIContext, message: string, durationMs: number = 2200): void {
   AppStorage.setOrCreate<string>(APP_TOAST_MESSAGE_KEY, message);
+  // 长文案结果（扫描/对账汇总）需要足够的阅读时间，默认 2.2 秒看不清。
+  AppStorage.setOrCreate<number>(APP_TOAST_DURATION_KEY, durationMs);
   const revision = AppStorage.get<number>(APP_TOAST_REVISION_KEY) ?? 0;
   AppStorage.setOrCreate<number>(APP_TOAST_REVISION_KEY, revision + 1);
 }
@@ -1522,7 +1525,7 @@ function sourceSettingsRows(panel: SettingsPanel, themeName: string, entries: Se
   }
 
   if (panel === SettingsPanel.Translation) {
-    const machineProvider = settingEntryValue(entries, 'translation_machine_provider', 'Google Web');
+    const machineProvider = settingEntryValue(entries, 'translation_machine_provider', 'Bing Web');
     const aiEnabled = settingEntryValue(entries, 'translation_ai_enabled', 'Off') === 'On';
     const aiProvider = settingEntryValue(entries, 'translation_ai_provider', 'DeepSeek');
     const machineProviderOptions = ['Google Web', 'Bing Web', 'Baidu Web', 'Youdao Web', 'MyMemory', 'Lingva'];
@@ -1543,7 +1546,7 @@ function sourceSettingsRows(panel: SettingsPanel, themeName: string, entries: Se
     ];
     const rows: SettingsRowItem[] = [
       optionSettingsRow('translation_buttons_enabled', 'Translation feature',
-        'Show translation buttons on gallery lists, details and comments', entries, ON_OFF_OPTIONS),
+        'Show translation buttons on gallery lists', entries, ON_OFF_OPTIONS),
       optionSettingsRow('reader_translation_enabled', 'Comic translation',
         'Show a draggable translation button in the reader', entries, ON_OFF_OPTIONS),
       optionSettingsRow('reader_ocr_debug_log', 'Record comic OCR debug data',

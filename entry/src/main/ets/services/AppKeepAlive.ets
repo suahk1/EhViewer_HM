@@ -41,7 +41,10 @@ class AppKeepAlive {
       const agentInfo: wantAgent.WantAgentInfo = {
         wants: [
           {
-            bundleName: 'yt.ehviewer.huawei',
+            // bundleName 必须取当前应用的实际包名：写死旧包名（yt.ehviewer.huawei）
+            // 会让 wantAgent 指向不存在的应用，长时任务申请直接失败（Invalid wantAgent
+            // object），后台保活整个失效。
+            bundleName: context.abilityInfo !== undefined ? context.abilityInfo.bundleName : '',
             moduleName: 'entry',
             abilityName: 'EntryAbility'
           }

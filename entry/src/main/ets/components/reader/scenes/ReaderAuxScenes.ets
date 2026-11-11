@@ -211,8 +211,10 @@ export struct CommentsScene {
         translateY: this.toolbarOffsetY,
         onBack: this.onBack,
         onAction: () => {
-          ehTranslationService.setEnabled(!this.translationEnabled);
-            showTranslationToggleFeedback(this.getUIContext(), !this.translationEnabled);
+          // F-120：先存切换后的新值再反馈，取反旧值会让提示与实际状态反向。
+          const nextTranslation = !this.translationEnabled;
+          ehTranslationService.setEnabled(nextTranslation);
+          showTranslationToggleFeedback(this.getUIContext(), nextTranslation);
         }
       })
     }

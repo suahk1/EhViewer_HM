@@ -793,8 +793,9 @@ export struct TopListScene {
               primary: true,
               directTap: true,
               onTapAction: () => {
-                ehTranslationService.setEnabled(!this.translationEnabled);
-                showTranslationToggleFeedback(this.getUIContext(), !this.translationEnabled);
+                const nextTranslation = !this.translationEnabled;
+                ehTranslationService.setEnabled(nextTranslation);
+                showTranslationToggleFeedback(this.getUIContext(), nextTranslation);
               }
             })
           }

@@ -156,6 +156,16 @@ struct ReaderSliderBubble {
     return this.imagePath.length > 0 ? 72 : 52;
   }
 
+  // 页码文字（如「168 / 172」）在 52px 圆里会挤压变形到无法辨认（F-118 用户反馈）。
+  // 改为按内容自适应宽度的胶囊：短页码保持圆形观感，长文本横向扩展。
+  private bubbleMinWidth(): number {
+    return this.imagePath.length > 0 ? 72 : 52;
+  }
+
+  private pageLabelFontSize(): number {
+    return this.displayText.length <= 4 ? 18 : 14;
+  }
+
   build() {
     if (this.imagePath.length > 0) {
       Stack({ alignContent: Alignment.Bottom }) {
@@ -168,25 +178,27 @@ struct ReaderSliderBubble {
           .borderColor(isHarmonyUiStyle() ? uiButtonHighlightBorderColor() : '#3F4756')
           .shadow({ radius: 8, color: 'rgba(0,0,0,0.45)', offsetX: 0, offsetY: 2 })
         Text(this.displayText)
-          .fontSize(14)
-          .fontWeight(FontWeight.Medium)
+          .fontSize(16)
+          .fontWeight(FontWeight.Bold)
           .fontColor(Color.White)
           .textAlign(TextAlign.Center)
           .width(this.bubbleSide())
-          .height(22)
-          .backgroundColor('rgba(15,23,42,0.75)')
+          .height(26)
+          .backgroundColor('rgba(15,23,42,0.85)')
           .borderRadius({ bottomLeft: uiRadius(10), bottomRight: uiRadius(10) })
       }
     } else {
       Text(this.displayText)
-        .fontSize(18)
-        .fontWeight(FontWeight.Medium)
+        .fontSize(this.pageLabelFontSize())
+        .fontWeight(FontWeight.Bold)
         .fontColor(isHarmonyUiStyle() ? themePrimaryText() : Color.White)
-        .lineHeight(52)
+        .lineHeight(this.bubbleMinWidth())
         .textAlign(TextAlign.Center)
         .textVerticalAlign(TextVerticalAlign.CENTER)
-        .width(52)
-        .height(52)
+        .maxLines(1)
+        .padding({ left: 10, right: 10 })
+        .constraintSize({ minWidth: this.bubbleMinWidth(), maxWidth: 160 })
+        .height(this.bubbleMinWidth())
         .backgroundColor(uiReaderProgressBackgroundColor('#1F2937'))
         .backgroundEffect(uiReaderProgressBackgroundEffect())
         .borderRadius(uiRadius(26))
