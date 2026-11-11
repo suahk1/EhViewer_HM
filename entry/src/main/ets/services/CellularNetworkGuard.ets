@@ -50,6 +50,12 @@ export function isDefaultNetworkCellular(): boolean {
     const bearerTypes = capabilities.bearerTypes;
     const cellular = bearerTypes.includes(connection.NetBearType.BEARER_CELLULAR);
     const wifi = bearerTypes.includes(connection.NetBearType.BEARER_WIFI);
+    // VPN 隧道作为默认网络时 bearer 只带 CELLULAR 不带 WIFI（即便底层是 WiFi），
+    // 按原逻辑会误报「移动网络警告」。VPN 下无法判定真实链路，宁可少警告也不误报。
+    const vpn = bearerTypes.includes(connection.NetBearType.BEARER_VPN);
+    if (vpn) {
+      return false;
+    }
     return cellular && !wifi;
   } catch (error) {
     return false;

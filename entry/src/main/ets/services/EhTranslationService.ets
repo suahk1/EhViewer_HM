@@ -1457,7 +1457,9 @@ function isMachineTranslationProvider(provider: string): boolean {
 
 function machineProviderFallbackOrder(primaryProvider: string): string[] {
   const result: string[] = [primaryProvider];
-  const fallbacks: string[] = ['Google Web', 'Baidu Web', 'MyMemory'];
+  // 国内直连三家排前（Bing/百度/有道），国外两家垫底：
+  // 主选是 Google 时被墙可无缝落到国内服务，反之亦然（F-108）。
+  const fallbacks: string[] = ['Bing Web', 'Baidu Web', 'Youdao Web', 'Google Web', 'MyMemory', 'Lingva'];
   for (let i = 0; i < fallbacks.length; i++) {
     if (result.indexOf(fallbacks[i]) < 0) {
       result.push(fallbacks[i]);
