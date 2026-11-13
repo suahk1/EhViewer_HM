@@ -443,13 +443,17 @@ function createOcrLineCandidate(line: textRecognition.TextLine, blockIndex: numb
   }
   const bounds = pointsBounds(points);
   const vertical = isVerticalOcrLine(line, bounds);
+  const fontSize = estimateOcrFontSize(line, bounds, vertical);
+  if (isOversizeShortArtText(fontSize, source)) {
+    return null;
+  }
   return {
     text: source,
     bounds: bounds,
     vertical: vertical,
     blockIndex: blockIndex,
     lineIndex: lineIndex,
-    fontSize: estimateOcrFontSize(line, bounds, vertical)
+    fontSize: fontSize
   };
 }
 
@@ -474,6 +478,24 @@ function isTranslatableOcrLine(value: string): boolean {
   return residue.length > 0;
 }
 
+// 拟声词艺术字（音效大字）会被 OCR 误识成 1-2 个字符（如「ドャャン」→"AN"），
+// 机翻结果（AN→「一个」）毫无意义且遮挡画面。巨型字号+极短文本直接跳过。
+const OCR_ART_TEXT_MIN_FONT_SIZE: number = 60;
+
+function ocrTranslatableResidue(value: string): string {
+  return value.trim()
+    .replace(/[0-9\u0660-\u0669\u06f0-\u06f9\uff10-\uff19]/g, '')
+    .replace(/[\s!-\/:-@\[-`{-~]/g, '');
+}
+
+function isOversizeShortArtText(fontSize: number, value: string): boolean {
+  if (fontSize < OCR_ART_TEXT_MIN_FONT_SIZE) {
+    return false;
+  }
+  const residue = ocrTranslatableResidue(value);
+  return residue.length > 0 && residue.length <= 2;
+}
+
 function ocrLineSkipReason(line: textRecognition.TextLine): string {
   if (line.value.trim().length === 0) {
     return '空文本';
@@ -486,6 +508,15 @@ function ocrLineSkipReason(line: textRecognition.TextLine): string {
   }
   if (!isTranslatableOcrLine(line.value)) {
     return '仅数字符号或单字符标记';
+  }
+  const points: ReaderTranslationPoint[] = [];
+  for (let i = 0; i < line.cornerPoints.length; i++) {
+    points.push({ x: line.cornerPoints[i].x, y: line.cornerPoints[i].y });
+  }
+  const bounds = pointsBounds(points);
+  const vertical = isVerticalOcrLine(line, bounds);
+  if (isOversizeShortArtText(estimateOcrFontSize(line, bounds, vertical), line.value)) {
+    return '巨型艺术字（拟声词误识）';
   }
   return '无有效内容';
 }
