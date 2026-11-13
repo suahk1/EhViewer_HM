@@ -1253,10 +1253,10 @@ export struct QuickActionColumn {
   }
 
   private touchY(event: TouchEvent): number {
-    // 全局 y → toolbar 本地 y（hitActionIndex 期望本地坐标，F-124）。
-    const raw = event.touches.length > 0 ? event.touches[0].y :
+    // onTouch 绑定在 toolbar Column 上，y 已是 toolbar 本地 vp 坐标
+    // （与 DownloadToolColumn 一致；F-124 的全局换算是二次扣减，实测导致命中恒 -1）。
+    return event.touches.length > 0 ? event.touches[0].y :
       (event.changedTouches.length > 0 ? event.changedTouches[0].y : -1);
-    return raw < 0 ? raw : raw - this.toolbarGlobalTop;
   }
 
   private updateActiveAction(event: TouchEvent): void {
@@ -1292,10 +1292,6 @@ export struct QuickActionColumn {
       this.onRandom();
     }
   }
-
-  // F-124：hitActionIndex 期望 toolbar 本地坐标，而 onTouch 给的是全局坐标——
-  // 面板展开越高错位越大，动作按钮点击全部失效（用户反馈「点了没作用」）。
-  @State private toolbarGlobalTop: number = 0;
 
   private handleToolbarTouch(event: TouchEvent): void {
     if (event.type === TouchType.Down) {
@@ -1423,13 +1419,6 @@ export struct QuickActionColumn {
     // 统一居中，左右两侧都以一级按钮为轴。
     .alignItems(HorizontalAlign.Center)
     .hitTestBehavior(HitTestMode.BLOCK_HIERARCHY)
-    .onAreaChange((_oldArea: Area, newArea: Area) => {
-      const globalY = newArea.globalPosition?.y === undefined ? Number.NaN :
-        Number.parseFloat(newArea.globalPosition.y.toString());
-      if (Number.isFinite(globalY)) {
-        this.toolbarGlobalTop = globalY;
-      }
-    })
     .onTouch((event: TouchEvent) => {
       this.handleToolbarTouch(event);
     })
@@ -1438,7 +1427,6 @@ export struct QuickActionColumn {
 
 @Component
 export struct SearchActionColumn {
-  @State private toolbarGlobalTop: number = 0;
   @Prop showTranslationButton: boolean = false;
   @Prop translationEnabled: boolean = false;
   @Prop side: string = FLOATING_ACTION_SIDE_RIGHT;
@@ -1479,10 +1467,10 @@ export struct SearchActionColumn {
   }
 
   private touchY(event: TouchEvent): number {
-    // 全局 y → toolbar 本地 y（hitActionIndex 期望本地坐标，F-124）。
-    const raw = event.touches.length > 0 ? event.touches[0].y :
+    // onTouch 绑定在 toolbar Column 上，y 已是 toolbar 本地 vp 坐标
+    // （与 DownloadToolColumn 一致；F-124 的全局换算是二次扣减，实测导致命中恒 -1）。
+    return event.touches.length > 0 ? event.touches[0].y :
       (event.changedTouches.length > 0 ? event.changedTouches[0].y : -1);
-    return raw < 0 ? raw : raw - this.toolbarGlobalTop;
   }
 
   private hitActionIndex(x: number, y: number): number {
